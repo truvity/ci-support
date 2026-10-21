@@ -1,0 +1,48 @@
+# Calls the shared workflow (truvity/ci-workflows), which runs each
+# Justfile recipe as its OWN parallel job, so a red result names the
+# recipe that failed instead of just the repository, and holds the
+# repository to the component contract (policy-conformance).
+#
+# Hosted runners: minutes are free on public repositories, and a public
+# repository must not run fork code on its own infrastructure.
+#
+# Pinned by COMMIT SHA, never a tag: tags move.
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recipes:
+    uses: truvity/ci-workflows/.github/workflows/check.yaml@fe1618d3679ee990ef9d0c300d829260eca5812b # v5.2.3
+    with:
+      # leak-canary is the standing proof that this repository carries no
+      # account ids, ARNs, hostnames or ticket keys, which is the reason it
+      # can be public. It fails the build, not a report.
+      recipes: '["lint", "leak-canary"]'
+      policy-conformance: true
+      # Report-only until the first release: C5 wants at least one
+      # `## vX.Y.Z` CHANGELOG heading and this repository has cut no tag.
+      # Turn strict on with the first release (the README's Releasing).
+      policy-conformance-strict: false
+
+  # Stable name for branch protection: the matrix reports as
+  # "recipes / lint" and so on, so a required context called "check"
+  # would never arrive and every PR would hang waiting for it.
+  check:
+    needs: recipes
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.recipes.result }}" = "success" ]'
