@@ -33,7 +33,7 @@ patterns=(
   'truvity-[a-z0-9-]*-(ci-cache|artifacts|state)'   # S3 buckets
   '\.truvity\.(xyz|com|co)'                # internal hostnames
   'glpat-|ghp_|github_pat_'                # tokens, in case of an accident
-  '(?i)opwerm'                             # a private organisation's name
+  '(?i)op[w]erm'                           # a private organisation's name (spelled so the script does not contain it)
   '\bINF-[0-9]+\b'                       # an internal ticket key
 )
 
