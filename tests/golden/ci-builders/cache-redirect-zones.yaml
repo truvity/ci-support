@@ -429,7 +429,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: cache-redirect
-          image: ghcr.io/truvity/ci-plane/cache-redirect:latest
+          image: ghcr.io/truvity/ci-support/cache-redirect:latest
           args:
             - -listen=:8080
             - "-s3-bucket=example-bucket"
