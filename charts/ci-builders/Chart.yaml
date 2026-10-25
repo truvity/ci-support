@@ -14,6 +14,6 @@ type: application
 # the tag before it packages the chart.
 version: 0.0.0
 appVersion: 0.0.0
-home: https://github.com/truvity/ci-plane
+home: https://github.com/truvity/ci-support
 sources:
-  - https://github.com/truvity/ci-plane
+  - https://github.com/truvity/ci-support

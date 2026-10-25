@@ -17,11 +17,17 @@ a message is as public as a file and cannot be edited after the push.
 
 `just check` is the gate and needs no credentials and no cluster. It runs:
 
-- `lint` checks that the shell scripts parse and pass shellcheck
+- `lint`: the chart lints from its CI values, and the shell scripts parse
+  and pass shellcheck at warning level
+- `golden`: every case under `tests/cases/` renders to its committed golden,
+  and every fixture under `tests/invalid/` is refused for the reason it names
+  (`just golden-update` rewrites the goldens; review the diff)
+- `schema`: the goldens validate against the Kubernetes API schemas
 - `leak-canary`
 
-Recipes appear with the things they check; a repository without one of the
-standard jobs does not have the recipe.
+`just test` runs the Go modules' vet and tests and `just vuln` their
+govulncheck; CI runs both, the chart assertions and the image builds in
+their own jobs.
 
 ## Component contract
 

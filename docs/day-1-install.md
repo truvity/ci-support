@@ -1,4 +1,4 @@
-# Day 1 — installing the CI plane on a fresh estate
+# Day 1 — installing the builders and caches on a fresh estate
 
 Order matters: the builders and caches before the runners that use them.
 
@@ -168,7 +168,7 @@ refuses to render without the ones it requires.
 ## Install the cache plane
 
 ```bash
-helm install ci-builders oci://ghcr.io/truvity/charts/ci-builders \
+helm install ci-builders oci://ghcr.io/truvity/ci-support/charts/ci-builders \
   --version <X.Y.Z> -n <namespace> \
   --set buildkitd.networkPolicy.consumerNamespaces={<runner namespace>} \
   --set npmCache.networkPolicy.consumerNamespaces={<runner namespace>} \
