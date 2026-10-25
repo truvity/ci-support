@@ -1,0 +1,259 @@
+---
+# Source: ci-builders/templates/buildkitd.yaml
+# Only the listed consumer namespaces may reach the builders.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkitd-arm64-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+      ci-plane.io/arch: arm64
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners-example
+      ports:
+        - port: 1234
+          protocol: TCP
+
+---
+# Source: ci-builders/templates/buildkitd.yaml
+# Only the listed consumer namespaces may reach the builders.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkitd-amd64-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+      ci-plane.io/arch: amd64
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: arc-runners-example
+      ports:
+        - port: 1234
+          protocol: TCP
+
+---
+# Source: ci-builders/templates/buildkitd.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd-arm64
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  selector:
+    app.kubernetes.io/name: buildkitd
+    ci-plane.io/arch: arm64
+  ports:
+    - name: grpc
+      port: 1234
+      targetPort: 1234
+
+---
+# Source: ci-builders/templates/buildkitd.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd-amd64
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  selector:
+    app.kubernetes.io/name: buildkitd
+    ci-plane.io/arch: amd64
+  ports:
+    - name: grpc
+      port: 1234
+      targetPort: 1234
+
+---
+# Source: ci-builders/templates/buildkitd.yaml
+# Rootless BuildKit: no privileged securityContext. The unconfined
+# seccomp profile is the documented rootless-buildkit requirement —
+# user-namespace isolation replaces the default profile, which blocks
+# the unprivileged clone/mount syscalls rootless depends on.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: buildkitd-arm64
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  serviceName: buildkitd-arm64
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+      ci-plane.io/arch: arm64
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkitd
+        app.kubernetes.io/part-of: ci-builders
+        ci-plane.io/arch: arm64
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      nodeSelector:
+        karpenter.sh/capacity-type: on-demand
+        karpenter.sh/nodepool: platform
+        kubernetes.io/arch: arm64
+      tolerations:
+        - key: arch
+          operator: Exists
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        # Rootless buildkit needs user namespaces; the default sysctl
+        # ceiling on minimal hosts is too low.
+        - name: enable-userns
+          image: docker.io/library/busybox:1.38
+          command: ["sysctl", "-w", "user.max_user_namespaces=63359"]
+          securityContext:
+            privileged: true
+      containers:
+        - name: buildkitd
+          image: docker.io/moby/buildkit:v0.33.0-rootless
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --oci-worker-no-process-sandbox
+            - --oci-max-parallelism=4
+          ports:
+            - name: grpc
+              containerPort: 1234
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: Unconfined
+          readinessProbe:
+            exec:
+              command: ["buildctl","--addr","tcp://127.0.0.1:1234","debug","workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            limits:
+              ephemeral-storage: 10Gi
+              memory: 6Gi
+            requests:
+              cpu: 1000m
+              ephemeral-storage: 2Gi
+              memory: 4Gi
+          volumeMounts:
+            - name: cache
+              mountPath: /home/user/.local/share/buildkit
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 50Gi
+
+---
+# Source: ci-builders/templates/buildkitd.yaml
+# Rootless BuildKit: no privileged securityContext. The unconfined
+# seccomp profile is the documented rootless-buildkit requirement —
+# user-namespace isolation replaces the default profile, which blocks
+# the unprivileged clone/mount syscalls rootless depends on.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: buildkitd-amd64
+  labels:
+    app.kubernetes.io/name: buildkitd
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  serviceName: buildkitd-amd64
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+      ci-plane.io/arch: amd64
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkitd
+        app.kubernetes.io/part-of: ci-builders
+        ci-plane.io/arch: amd64
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      nodeSelector:
+        karpenter.sh/capacity-type: on-demand
+        karpenter.sh/nodepool: volatile
+        kubernetes.io/arch: amd64
+      tolerations:
+        - key: arch
+          operator: Exists
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        # Rootless buildkit needs user namespaces; the default sysctl
+        # ceiling on minimal hosts is too low.
+        - name: enable-userns
+          image: docker.io/library/busybox:1.38
+          command: ["sysctl", "-w", "user.max_user_namespaces=63359"]
+          securityContext:
+            privileged: true
+      containers:
+        - name: buildkitd
+          image: docker.io/moby/buildkit:v0.33.0-rootless
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --oci-worker-no-process-sandbox
+            - --oci-max-parallelism=4
+          ports:
+            - name: grpc
+              containerPort: 1234
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: Unconfined
+          readinessProbe:
+            exec:
+              command: ["buildctl","--addr","tcp://127.0.0.1:1234","debug","workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            limits:
+              ephemeral-storage: 10Gi
+              memory: 6Gi
+            requests:
+              cpu: 1000m
+              ephemeral-storage: 2Gi
+              memory: 4Gi
+          volumeMounts:
+            - name: cache
+              mountPath: /home/user/.local/share/buildkit
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 50Gi

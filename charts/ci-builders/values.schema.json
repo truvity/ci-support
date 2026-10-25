@@ -1,0 +1,662 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ci-builders chart values",
+  "description": "Open, not strict: only types, and the inputs the chart cannot work without. The estate facts -- which runner namespaces may reach each component -- have no default and are required while the component and its NetworkPolicy are on, because a builder that admits nobody cannot work.",
+  "type": "object",
+  "definitions": {
+    "cacheHost": {
+      "type": "string",
+      "description": "A DNS host name (no scheme, path or port), or empty for none.",
+      "pattern": "^$|^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$"
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "consumerNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The runner namespaces that may reach this component. Required, and non-empty, while the component and its policy are on."
+        },
+        "additionalIngress": {
+          "type": "array",
+          "description": "Extra ingress beside consumerNamespaces: one additive NetworkPolicy per entry. Empty by default.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "from"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "arch": {
+                "enum": [
+                  "amd64",
+                  "arm64"
+                ]
+              },
+              "annotations": {
+                "type": "object"
+              },
+              "from": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "requiredPolicy": {
+      "if": {
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "consumerNamespaces"
+        ],
+        "properties": {
+          "consumerNamespaces": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "properties": {
+    "runnerImage": {
+      "$ref": "#/definitions/image"
+    },
+    "nixWorkerImage": {
+      "$ref": "#/definitions/image"
+    },
+    "cacheRedirectImage": {
+      "$ref": "#/definitions/image"
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "storageClassName": {
+      "type": "string"
+    },
+    "nodeClass": {
+      "type": "string",
+      "description": "Name of a class under nodeClasses; the placement of every component that has no placement of its own."
+    },
+    "nodeClasses": {
+      "type": "object",
+      "description": "Placement classes you define: name -> nodeSelector / tolerations.",
+      "additionalProperties": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "properties": {
+          "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+          "tolerations": {"type": "array", "items": {"type": "object"}}
+        }
+      }
+    },
+    "sizes": {
+      "type": "object",
+      "description": "Builder sizes you define: name -> resources / maxParallelism (buildkitd) / maxJobs, cores (nixWorkers).",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "resources": {"type": "object"},
+          "maxParallelism": {"type": "integer", "minimum": 1},
+          "maxJobs": {"type": "integer", "minimum": 1},
+          "cores": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "buildkitd": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "networkPolicy": {
+          "$ref": "#/definitions/networkPolicy"
+        },
+        "maxParallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cap on concurrent build steps per daemon (--oci-max-parallelism). Unset = no flag."
+        },
+        "probes": {
+          "type": "object",
+          "description": "The buildkitd container's probes, each running `buildctl debug workers`. Liveness (off by default) restarts a daemon that stays unresponsive and needs the startup probe.",
+          "additionalProperties": false,
+          "properties": {
+            "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "initialDelaySeconds": {"type": "integer", "minimum": 0},
+            "periodSeconds": {"type": "integer", "minimum": 1},
+            "timeoutSeconds": {"type": "integer", "minimum": 1},
+            "failureThreshold": {"type": "integer", "minimum": 1}
+          }
+        },
+            "liveness": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "initialDelaySeconds": {"type": "integer", "minimum": 0},
+            "periodSeconds": {"type": "integer", "minimum": 1},
+            "timeoutSeconds": {"type": "integer", "minimum": 1},
+            "failureThreshold": {"type": "integer", "minimum": 1}
+          }
+        },
+            "startup": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "initialDelaySeconds": {"type": "integer", "minimum": 0},
+            "periodSeconds": {"type": "integer", "minimum": 1},
+            "timeoutSeconds": {"type": "integer", "minimum": 1},
+            "failureThreshold": {"type": "integer", "minimum": 1}
+          }
+        }
+          }
+        },
+        "mtls": {
+          "type": "object",
+          "description": "Mutual-TLS builders, beside the plain ones or in place of them. Off by default; the values.yaml comment has the sequence.",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "mode": {"type": "string", "enum": ["parallel", "inPlace"], "description": "parallel: TLS builders beside the plain ones. inPlace: the plain builders become the TLS ones, keeping their cache."},
+            "reloader": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+            "retirePlain": {"type": "boolean", "description": "Stop rendering the plain builders. Refused without enabled, and with mode inPlace."},
+            "serverCertificate": {
+              "type": "object",
+              "properties": {
+                "create": {"type": "boolean"},
+                "dnsNames": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "arm64": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "amd64": {"type": "array", "items": {"type": "string", "minLength": 1}}
+                  }
+                }
+              }
+            },
+            "clientCA": {
+              "type": "object",
+              "properties": {
+                "configMapName": {"type": "string", "minLength": 1},
+                "create": {"type": "boolean"},
+                "requesterNamespaces": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "externalClients": {
+                  "description": "Client identities for runners outside the cluster, by name: each its own Certificate, policy and optional PushSecret. Needs create: true.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["commonName"],
+                    "properties": {
+                      "commonName": {"type": "string", "minLength": 1},
+                      "secretName": {"type": "string"},
+                      "duration": {"type": "string"},
+                      "renewBefore": {"type": "string"},
+                      "privateKey": {"type": "object"},
+                      "push": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "enabled": {"type": "boolean"},
+                          "storeRef": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {"type": "string"},
+                              "kind": {"type": "string", "enum": ["ClusterSecretStore", "SecretStore"]}
+                            }
+                          },
+                          "refreshInterval": {"type": "string"},
+                          "names": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "ca": {"type": "string", "minLength": 1},
+                              "cert": {"type": "string", "minLength": 1},
+                              "key": {"type": "string", "minLength": 1}
+                            }
+                          },
+                          "secretType": {"type": "string", "enum": ["SecureString", "String"]},
+                          "kmsKeyId": {"type": "string"},
+                          "description": {"type": "string"},
+                          "tags": {"type": "object", "additionalProperties": {"type": "string"}},
+                          "caPem": {"type": "string"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "networkPolicy": {
+              "type": "object",
+              "properties": {
+                "additionalIngress": {"$ref": "#/definitions/networkPolicy/properties/additionalIngress"}
+              }
+            }
+          }
+        },
+        "archs": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "amd64",
+              "arm64"
+            ]
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "$ref": "#/definitions/requiredPolicy"
+          }
+        }
+      },
+      "description": "Rootless BuildKit builders, one per architecture."
+    },
+    "nixWorkers": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "networkPolicy": {
+          "$ref": "#/definitions/networkPolicy"
+        },
+        "archs": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "amd64",
+              "arm64"
+            ]
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "$ref": "#/definitions/requiredPolicy"
+          }
+        }
+      },
+      "description": "Persistent remote Nix builders, one per architecture."
+    },
+    "cacheRedirect": {
+      "type": "object",
+      "description": "cache-redirect: the Nix, Go module, Maven and npm pull-through cache (and, opt-in, the Gradle build cache) that redirects hits to presigned URLs of its bucket. Off by default; enabled, it needs the bucket, its region and the runner namespaces allowed to reach it.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "drainDelaySeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds of preStop sleep before shutdown; 0 renders no hook."
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "podDisruptionBudget": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "minAvailable": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "topologySpread": {
+          "type": "object",
+          "properties": {
+            "zone": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "maxSkew": { "type": "integer", "minimum": 1 },
+                "whenUnsatisfiable": { "enum": ["DoNotSchedule", "ScheduleAnyway"] },
+                "minDomains": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "0 renders nothing; DoNotSchedule only."
+                }
+              }
+            }
+          }
+        },
+        "trafficDistribution": {
+          "enum": ["", "PreferClose", "PreferSameZone", "PreferSameNode"],
+          "description": "Service spec.trafficDistribution; empty renders nothing."
+        },
+        "s3": {
+          "type": "object",
+          "properties": {
+            "bucket": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "pathStyle": {
+              "type": "boolean"
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "presignTTL": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "description": "A Go duration, at most 168h (SigV4's limit; the service refuses more)."
+        },
+        "nix": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "upstream": {
+              "type": "string",
+              "pattern": "^https?://"
+            },
+            "priority": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "goproxy": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "upstream": {
+              "type": "string",
+              "pattern": "^https?://"
+            },
+            "sumdb": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "upstream": {
+                  "type": "string",
+                  "pattern": "^https?://"
+                }
+              }
+            }
+          }
+        },
+        "maven": {
+          "type": "object",
+          "description": "The Maven repositories under /maven/<name>; read-only for clients.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repositories": {
+              "type": "object",
+              "description": "name: URL. Naming any replaces the defaults (central, google, gradle-plugins).",
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9._-]+$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^https?://"
+              }
+            }
+          }
+        },
+        "gradle": {
+          "type": "object",
+          "description": "The Gradle remote build cache under /gradle/cache/. WRITABLE by every client that can reach the service: off by default; both presets turn it on, each tier in its own deployment and bucket.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxEntryBytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "npm": {
+          "type": "object",
+          "description": "The npm registry under /npm; read-only for clients (writes are refused). Off by default; both presets turn it on.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "registry": {
+              "type": "string",
+              "pattern": "^https?://"
+            },
+            "freshTTL": {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$",
+              "description": "A Go duration: how long a packument is served without asking the registry again."
+            }
+          }
+        },
+        "hosts": {
+          "type": "object",
+          "description": "A host name per front-end: a request with that Host is served at the root of the front-end (no gateway rewrite). Empty: none. Any other Host keeps the /nix, /goproxy, /maven/<repo>, /gradle/cache/, /npm layout.",
+          "additionalProperties": false,
+          "properties": {
+            "nix": {"$ref": "#/definitions/cacheHost"},
+            "maven": {"$ref": "#/definitions/cacheHost"},
+            "gradle": {"$ref": "#/definitions/cacheHost"},
+            "npm": {"$ref": "#/definitions/cacheHost"}
+          }
+        },
+        "extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^-"
+          }
+        },
+        "networkPolicy": {
+          "$ref": "#/definitions/networkPolicy"
+        },
+        "monitoring": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "$ref": "#/definitions/requiredPolicy"
+          },
+          "s3": {
+            "required": [
+              "bucket",
+              "region"
+            ],
+            "properties": {
+              "bucket": {
+                "minLength": 1
+              },
+              "region": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "npmCache": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "networkPolicy": {
+          "$ref": "#/definitions/networkPolicy"
+        }
+      },
+      "if": {
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "$ref": "#/definitions/requiredPolicy"
+          }
+        }
+      },
+      "description": "The read-through npm registry cache."
+    },
+    "bazelRemote": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": {"type": "boolean"},
+            "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        }
+      }
+    }
+  }
+}

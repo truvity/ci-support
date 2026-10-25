@@ -1,0 +1,46 @@
+# Preset: the PREVIEW tier's builder and cache plane. Opt in by listing
+# it before your own values (Argo CD: `helm.valueFiles:
+# [presets/preview.yaml]`). A later values file wins key by key.
+#
+# Shape: buildkitd on a dedicated pool per architecture (a spot reclaim
+# kills a build with two minutes' notice, so run it on-demand), with a
+# 10Gi limit that pool's nodes can hold; all caches on, the Gradle remote
+# build cache of cache-redirect included (a writable cache: preview jobs
+# may write what preview jobs read, by design; the stable
+# preset turns it on in its own deployment and bucket). The preset names
+# no node pool, label or taint of a platform; it refers to NAMES that you
+# define in your own values:
+#
+#   nodeClasses.builders-arm64     where buildkitd-arm64 goes
+#   nodeClasses.builders-amd64     where buildkitd-amd64 goes
+#   nodeClasses.cache-plane        where the caches go (`{}` for nowhere
+#                                  in particular)
+#
+# The chart adds `kubernetes.io/arch` to a builder's selector itself. The
+# chart refuses to render with a name undefined. A platform's own pod
+# annotations and storage class are not here: see presets/karpenter.yaml.
+# Estate facts -- registries, namespaces that may consume, the Go module
+# proxy's bucket -- are never in a preset.
+nodeClass: cache-plane
+buildkitd:
+  maxParallelism: 4
+  resources:
+    limits:
+      memory: 10Gi
+  scheduling:
+    arm64:
+      nodeClass: builders-arm64
+    amd64:
+      nodeClass: builders-amd64
+bazelRemote:
+  enabled: true
+npmCache:
+  enabled: true
+cacheRedirect:
+  gradle:
+    enabled: true
+  # The npm registry (v7.8.0) is read-only for clients (every write is refused),
+  # so it needs no more care than the Maven repositories; it replaces the
+  # verdaccio of `npmCache` above once the runners are pointed at it.
+  npm:
+    enabled: true
