@@ -3,7 +3,12 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v0.1.0
+
+- **New Go packages `pkg/buildkit` and `pkg/buildkit/ec2` (module `github.com/truvity/ci-support`): the BuildKit builders on machines of their own.**
+  - `pkg/buildkit` renders the daemon with no provider in it, as a github.com/truvity/asg module: `buildkitd.toml` (garbage collection, `max-parallelism`, the mutual-TLS listener, the debug address on loopback), the systemd unit (rootless through rootlesskit, `MemoryHigh` 85% and `MemoryMax` 92% of the machine, a lower CPU weight), the pinned BuildKit v0.33.0 and rootlesskit v3.0.1 releases (sha256 of the GitHub release assets), the cache volume (xfs, mounted from fstab) and an nftables table that drops traffic to the instance metadata service from every uid but root. The daemon starts only on a boot into service; the launch hook completes once `buildctl debug workers` answers.
+  - `pkg/buildkit/ec2` runs it on an EC2 Auto Scaling group with asg v0.4.0: a listener of a shared NLB (`front.Attach`, TCP, idle timeout 3600 s), ELB health, a warm pool of one that takes a scaled-in instance back (`ReuseOnScaleIn`), a 100 GiB cache volume, launch-before-terminate refresh, the termination policy `NewestInstance`, asg's `ssmcert` module (the server certificate, its key and the client CA from SSM into `/run`; the nightly rotation through Standby) and asg's `watchdog` module. Its one grant of its own is `kms:Decrypt` of the certificate parameters' key, by alias, through SSM, for those parameters only.
+- The CI Go job and `just test` cover the root module.
 
 - Create the repository: the licence, the README, the contributing and security notes, the toolchain (`devbox.json`), the `Justfile` gate (`lint`, `leak-canary`), the leak canary and the CI workflow that holds the repository to the component contract. No chart, image or tool is published yet; the caches, the docker and nix builders and the `ci-builders` chart move here from truvity/ci-plane in a later migration, with their own entries.
 - The leak canary's pattern for a private organisation's name is spelled so that the script itself does not contain the name.
