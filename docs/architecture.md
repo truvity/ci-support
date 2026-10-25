@@ -1,0 +1,918 @@
+# Architecture
+
+The CI plane is released as **one versioned unit**: the runner,
+nix-worker and cache-redirect images and the `ci-builders` Helm chart.
+This document records the load-bearing decisions and why each one holds.
+
+The `arc-runners` chart, which rendered the Actions Runner Controller
+scale sets, is archived; its last release is 7.8.3. The decisions that
+were that chart's alone (rendering the CRs directly, per-scale-set
+overrides, the Nix sandbox, runner packing, the AWS profile for a
+credential helper) are in
+[this document at `v7.8.3`](https://github.com/truvity/ci-plane/blob/v7.8.3/docs/architecture.md).
+
+## One version, transitively digest-pinned
+
+A `v*` tag releases everything. The release workflow:
+
+1. builds each image's heavy base **natively per architecture** (amd64
+   and arm64 runners, no QEMU) with a registry layer cache, and merges
+   the two halves into one manifest list;
+2. assembles the release images from those bases without executing
+   anything (`image/release/`), and stamps each digest into the chart
+   defaults **by key** (`hack/stamp-digests.sh`), so the runner's digest
+   can never land in `nixWorkerImage`;
+3. stamps the chart's `version` and `appVersion` from the tag — the
+   committed `0.0.0` is a placeholder — and publishes it.
+
+A consumer therefore pins **one chart version** and is transitively
+digest-pinned to both images. Every release builds the images: native
+builds with a layer cache made an unchanged base cheap, so the old
+skip-rebuild gate, and its "did `image/` change?" question, is gone.
+The stamp is the compatibility statement: chart X was released against
+image X.
+
+## Runner watchdog: a stuck runner says so itself
+
+`runner-watchdog` ships in the runner image. The readiness probe, the
+janitor and the PodMonitor this section describes around it were the
+archived `arc-runners` chart's (`runner.watchdog`, last released 7.8.3).
+
+Upstream ARC
+[#4307](https://github.com/actions/actions-runner-controller/issues/4307)
+strands an ephemeral runner after a cancelled or interrupted job: the
+runner stays registered and idle, and never takes another job. The
+janitor finds such runners by grepping the last 200 lines of each idle
+runner's log every few minutes. `runner.watchdog` (off by default) lets
+each runner judge itself, with job state the janitor cannot see from
+outside.
+
+`runner-watchdog` (image/runner-watchdog, in the runner image at
+`/usr/local/bin/runner-watchdog`) becomes the runner container's PID 1
+and runs `/home/runner/run.sh` as its child:
+
+- **Transparent.** The child runs in its own process group. Its stdout
+  and stderr are copied to the container's byte for byte, so
+  `kubectl logs` reads the same. SIGTERM, SIGINT, SIGHUP, SIGQUIT and
+  SIGUSR1/2 are forwarded to the child's group (run.sh traps INT/TERM
+  and hands them to the listener, as it does as PID 1). Every orphan
+  reparented to the wrapper is reaped, and the wrapper exits with the
+  child's code (128+N if signal N killed it). It never exits while the
+  child runs.
+- **Never in the runner's way.** Lines go to the matcher through a
+  bounded queue. When the matcher falls behind, lines are dropped and
+  counted (`runner_watchdog_lines_dropped_total`), and the runner never
+  waits. If the HTTP server cannot bind, the watchdog says so on stderr
+  and the runner runs on.
+- **Job-aware.** STUCK means no job is running AND a stuck signature,
+  first seen while idle, has persisted for `grace` (45s by default). A
+  signature during a job is counted and never acted on. A job starting
+  clears it.
+
+The lines it reads, from actions/runner v2.338.0 (the upstream image sets
+`ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1`, so the listener's trace reaches
+stdout):
+
+| Line | Source | Meaning |
+|---|---|---|
+| `<ts>Z: Running job: <name>` | `Runner.Listener/JobDispatcher.cs` | a job started |
+| `<ts>Z: Job <name> completed with result: <result>` | `Runner.Listener/JobDispatcher.cs` | the job ended |
+| `Skipping message Job. Job message already acquired '<id>'. …` (e.g. `job assignment is invalid: MissingKey`) | `Runner.Listener/Runner.cs`, HTTP 409 from `acquirejob` | stuck signature |
+| `Skipping message Job. Job message not found '<id>'. …` (e.g. `job was canceled`) | the same, HTTP 404 | stuck signature |
+| `Skipping message Job. Unprocessable job '<id>'. …` | the same, HTTP 422 | stuck signature |
+| `Registration <id> was not found.` | the broker session's token refresh (`BrokerServer`) | stuck signature |
+
+The job lines are matched only at the start of a line. The listener also
+traces each of them as `[RUNNER … INFO Terminal] WRITE LINE: …`, and
+counting that copy would count every job twice.
+
+**The verdict is a readiness probe, never a liveness probe.** `/healthz`
+answers 200, or 503 while stuck. A liveness failure would restart the
+container, and a restarted runner cannot register again: its JIT
+registration is single-use, and the restart ends in the "Registration …
+was not found" crash loop instead. The remedy is deleting the
+EphemeralRunner, which ARC then replaces. The janitor (every minute)
+deletes any runner that holds no job and whose pod has a readiness probe on
+its `runner` container, that container is running, and the pod has been
+NotReady for `janitor.notReadySeconds` (60). The criterion keys on the pod,
+not on a chart value: a pod without the probe (the watchdog off, or an
+older pod) never matches, so it is inert until `runner.watchdog.enabled` is
+on. The log grep stays as the backstop (idle, past `graceSeconds`), for a
+runner whose watchdog cannot answer. The chart's `hack/janitor-cases.sh`
+ran both against a stub `kubectl`.
+
+**A drill proves the chain without waiting for #4307.** With
+`runner.watchdog.drillFile` set (an absolute path, off by default), the
+watchdog feeds itself one line under its own signature, `drill`, each time
+that file appears. `kubectl exec <idle runner> -- touch <path>` then
+drives the real path: the matcher arms on the line only because no job is
+running, `/healthz` answers 503 after `grace`, the pod goes NotReady, the
+janitor deletes the runner, ARC replaces it, and `ARCRunnerStuck` fires.
+The line goes through the same matcher as the runner's output, so a drill
+during a job is only counted. `runner_watchdog_signature_lines_total{signature="drill"}`
+tells a drill from a real detection. An unset `drillFile` stays out of
+the values-hash, so the key's arrival recycles no listener.
+
+`/metrics` is the Prometheus text format, on a container port named
+`watchdog` (`runner.watchdog.port`, 8091 by default). `monitoring.enabled`
+renders the PodMonitor for it (and one for the scale-set listeners' `gha_*`
+metrics, port `metrics`, which need the controller chart's `metrics:`); an
+estate that scrapes some other way selects the port by name:
+
+| Series | Type |
+|---|---|
+| `runner_watchdog_stuck` | gauge, 0/1 |
+| `runner_watchdog_stuck_detections_total` | counter |
+| `runner_watchdog_job_running` | gauge, 0/1 |
+| `runner_watchdog_jobs_started_total`, `runner_watchdog_jobs_completed_total` | counter |
+| `runner_watchdog_signature_lines_total{signature=…}` | counter, during a job or not |
+| `runner_watchdog_lines_total`, `runner_watchdog_lines_dropped_total` | counter |
+| `runner_watchdog_seconds_since_last_line`, `runner_watchdog_seconds_since_last_job` | gauge |
+| `runner_watchdog_grace_seconds` | gauge |
+
+The only lines the watchdog adds to the log are its own transitions,
+prefixed `runner-watchdog:` (`stuck: …` and `recovered: …`), and a
+server that could not bind.
+
+What it does not cover: a runner that hangs WHILE it holds a job
+(actions/runner#4569, a cancellation redelivery loop). The job is
+running, so the watchdog judges nothing.
+
+## Runner CA certificates: supplied at runtime, trusted without root
+
+`runner-extra-ca` ships in the runner image and is driven by
+`CI_EXTRA_CA_DIR` alone. The mount and the render-time refusals this
+section describes were the archived `arc-runners` chart's
+(`extraCACertificates`, last released 7.8.3).
+
+An HTTPS endpoint under a private CA (a cache, a mirror) has to be trusted
+by every client a job runs. The runner image is public and identical for
+every estate, so it carries no CA; the certificates arrive with the pod.
+`extraCACertificates` (off by default) names a ConfigMap or a Secret in the
+release's namespace. The chart mounts it read-only on the runner container
+(default `/var/run/extra-ca`), sets `CI_EXTRA_CA_DIR` to it, and puts the
+image's `/usr/local/bin/runner-extra-ca` in front of the container's
+command (in front of `runner-watchdog` too, which stays PID 1 because the
+script `exec`s the rest of the command line).
+
+At container start `runner-extra-ca` (image/runner-extra-ca.sh) reads every
+`*.pem` and `*.crt` file in `CI_EXTRA_CA_DIR` that holds a PEM certificate.
+Unset, it does nothing. The runner container is the `runner` user and, on a
+`restricted` set, may not be root, so `update-ca-certificates` (which writes
+`/etc/ssl`) is not the mechanism. It builds a bundle in the runner's home
+instead, the system roots followed by the extras, and exports where each
+client looks. Every step of every job inherits the environment, because the
+runner starts under it:
+
+| Variable | Read by | Names |
+|---|---|---|
+| `SSL_CERT_FILE` | Go, OpenSSL, .NET (the runner itself) | the bundle |
+| `NIX_SSL_CERT_FILE` | nix | the bundle |
+| `CURL_CA_BUNDLE` | curl | the bundle |
+| `GIT_SSL_CAINFO` | git (libcurl does not read `SSL_CERT_FILE`) | the bundle |
+| `REQUESTS_CA_BUNDLE` | Python `requests` | the bundle |
+| `NODE_EXTRA_CA_CERTS` | JavaScript actions | the extras alone: Node adds them to its built-in roots |
+
+The bundle includes the system roots on purpose: `SSL_CERT_FILE` replaces,
+not extends, the default trust, and the runner must keep verifying
+github.com. Run as root with `update-ca-certificates` present (not how ARC
+starts it), the script installs the extras into the system store instead
+and exports only `NODE_EXTRA_CA_CERTS`, which Node never reads from there.
+
+**A problem never stops the runner.** A missing directory, no certificate
+in it, an unwritable home: each is one line on stderr
+(`runner-extra-ca: …`) and the command still runs, the same stance as the
+caches this exists for. A source that does not exist (a typo in
+`configMapName`) is different: the pod does not start, which is the visible
+failure that typo should be. The chart refuses, at render time, both
+sources at once, and a key that does not end in `.pem` or `.crt` (it would
+be mounted and then ignored).
+
+What it does not cover: a step that runs in a container the job starts
+(`container:`, `docker run`) has its own trust store, and a rotation of the
+source reaches a pod only when it starts (runners are ephemeral, so the next
+runner has it). The values-hash includes the setting, so changing the
+source's name recycles the listeners.
+
+`hack/extra-ca-cases.sh` runs the script as a non-root user (the system
+roots and the extras both verify against the bundle, a ConfigMap-shaped
+directory works, bad input is reported and survived), and the CI image job
+runs it in the built image. On ECS Fargate runners the image builder adds
+certificates itself, so nothing here applies.
+
+## The release trigger is the last deliberate control point
+
+With pull-based promotion automated downstream, tag creation is the one
+remaining human-or-designated-actor decision. `v*` tags are
+ruleset-restricted: a release team, plus (optionally) the CI automation
+App as a bypass actor for the weekly auto-release. The App is a
+dedicated identity rather than the built-in `github-actions` token for
+three reasons: singular revocable control over release cadence, clean
+attribution, and native event flow — an App-pushed tag *triggers* the
+Release workflow, where a `GITHUB_TOKEN` push is inert (GitHub's
+loop-protection), and that inertness is viral to every future
+tag-reactive workflow.
+
+## Promotion is the consumer's job
+
+This repository releases and stops. There is no cross-repo reach: the
+consumer's own renovate tracks the published chart version (the
+`ci-builders` chart's version is the plane's version), bumps its pin, regenerates any derived files inside
+the update branch, and automerges on its own CI. See the consumer-side
+wiring in [day-2-operations.md](day-2-operations.md).
+
+## The cache doctrine
+
+Every `charts/ci-builders` component is disposable: no backups, zero
+IAM where possible, no backups; losing one costs a re-warm. A dead
+cache degrades to upstream — slower, never broken. buildkitd's PVC is
+the HOT layer only; the WARM layer is `cache-to type=registry` and
+survives builder replacement. Restrictive network defaults: only listed
+namespaces reach the builders.
+
+## cache-redirect: a hit is a redirect, not a stream
+
+A read-through cache that streams every byte of every hit through one
+pod is limited by that pod's node network (on the order of 100 MiB/s
+sustained), which a CI burst saturates: each job then crawls, however
+warm the cache is. Yet almost every byte such a cache serves is an
+immutable, content-addressed file: a NAR, a module zip.
+
+`cache-redirect` (image `ghcr.io/truvity/ci-plane/cache-redirect`, chart
+`cacheRedirect`, off by default) keeps the cache's index in an S3 (or
+S3-compatible) bucket and answers a hit on a **large** immutable object
+with an **HTTP 302 to a presigned GET URL** of that object, valid for
+`presignTTL` (5 minutes). The runner downloads from the object store
+directly; the service only ever handles small requests, so two small
+replicas spread across nodes carry a fleet. **Small** objects (narinfo,
+`.info`, `.mod`, checksum-database tiles) are served directly, from an
+in-memory LRU or the bucket. The pods keep nothing on local disk.
+
+The pods are interchangeable (the only per-pod state is an in-memory LRU
+and a per-key fetch lock, both of which cost S3 reads or a duplicate
+upstream fetch when lost, never correctness), so availability is a matter
+of where they run. One replica per node is always on; to also have one per
+availability zone set `cacheRedirect.replicas` to the zone count and
+`cacheRedirect.topologySpread.zone.enabled: true` (with `minDomains` set to
+the zone count when the node class exists in fewer zones than that), and
+`cacheRedirect.trafficDistribution: PreferClose` so a client keeps reaching
+the replica in its own zone.
+
+Clients, every front-end on one Service:
+
+```text
+nix:    substituters = http://cache-redirect.<ns>.svc.cluster.local/nix https://cache.nixos.org/
+go:     GOPROXY=http://cache-redirect.<ns>.svc.cluster.local/goproxy|https://proxy.golang.org,direct
+maven:  http://cache-redirect.<ns>.svc.cluster.local/maven/central   (also /google and /gradle-plugins)
+gradle: http://cache-redirect.<ns>.svc.cluster.local/gradle/cache/   (only when cacheRedirect.gradle.enabled)
+npm:    http://cache-redirect.<ns>.svc.cluster.local/npm             (only when cacheRedirect.npm.enabled)
+```
+
+### A name per front-end
+
+Behind a gateway that routes by name, give each of Nix, Maven, Gradle and npm a
+host name of its own (`cacheRedirect.hosts.nix|maven|gradle|npm`; flag
+`-hosts kind=host`, repeatable or comma-separated, environment
+`CACHE_REDIRECT_HOSTS`). A request whose `Host` is one of them is served at
+the **root** of that front-end, so the gateway forwards the request to the
+Service as it is and rewrites no path:
+
+```text
+nix:    substituters = https://<nix host>                 /nix-cache-info, /<hash>.narinfo, /nar/...
+maven:  https://<maven host>/central                      (also /google, /gradle-plugins; GET / lists them)
+gradle: https://<gradle host>/                            GET|PUT /<key>; GET / is the probe (200)
+npm:    registry = https://<npm host>/                    /<package>, /<package>/-/<file>.tgz, /-/ping; GET / is the probe
+```
+
+The Host is compared without its port (a gateway may forward it with or
+without one), without a trailing dot, and in lower case. The service moves a
+matching request under the front-end's path (`nix.example/foo` is served as
+`/nix/foo`) before routing it, so each front-end is written once and
+the store keys are the same whichever name was used (`nix/`, `maven/`,
+`gradle/`, `npm/`). The Nix host is lenient about one thing: a path that already
+starts with `/nix/` (a binary cache never serves one) is taken as it is, so
+a gateway that still rewrites the client's root onto `/nix` (the only way
+before hosts existed) can be changed after the host is set rather than in the
+same moment. Maven, Gradle and npm have no such leniency (`/maven/` on the maven
+host is a repository named `maven`). A request for **any other** Host keeps the path layout above,
+including the Go proxy (it has no host of its own: `/goproxy`), the name that
+served everything before hosts existed, and the in-cluster Service. `/healthz`
+and `/metrics` are answered on the path layout only: a kubelet probes the pod
+address, not a name. Naming a host for a front-end that is off, or one name for
+two front-ends, is refused at start and at render.
+
+Nix (curl) and the go command both follow redirects; a runner must be
+able to reach the bucket's endpoint itself (on AWS a gateway VPC endpoint
+for S3 is free and keeps the bytes off a NAT gateway). Its presigned
+request carries no credential of the runner's: the URL is the
+credential, for one object, for minutes.
+
+### A miss is fetched once and committed only whole
+
+A miss is pulled through from upstream **once per key**: the first
+request leads, and requests for the same key that arrive meanwhile wait
+for its outcome and are then redirected (or served the small body) --
+they never start a second fetch. The leader's client is fed the bytes as
+they arrive while the same bytes are uploaded to the bucket: one `PUT`
+for an object smaller than a part (8 MiB), a multipart upload otherwise.
+The fetch runs on the service's own context, so a leader whose client
+goes away does not abort the upload the waiting requests count on. The
+cost of this simplicity: a waiter for a large cold NAR waits for the
+whole download before its redirect, rather than streaming alongside.
+
+The object is **committed only when the upstream response completed
+and is whole**: every byte its `Content-Length` promised and no more
+and, for a NAR, the size and hash its narinfo announced (below).
+S3 makes a multipart object visible at `CompleteMultipartUpload` and
+never before, so anything short of that is aborted and nothing appears
+under the key. A truncated object in a cache is worse than none -- it is
+a hit forever; a truncated zip in a Go module cache (`zip: not a valid
+zip file`) is a failure this plane has met. The client of a failed
+stream sees a broken response, never a clean end. An upstream body that
+sends nothing for `-idle-timeout` (1 minute) fails the same way. Give the
+bucket an `AbortIncompleteMultipartUpload` lifecycle rule as the
+backstop for an abort that itself never ran (a pod killed mid-upload),
+and an expiration rule if it should not grow forever: an expired object
+is only a miss.
+
+A **NAR is verified against its narinfo, not its file name**: on
+cache.nixos.org `nar/<hash>.nar.zst` is not the hash of the compressed
+body. Whenever the Nix front-end serves a narinfo (miss or hit) it parses
+`URL`, `FileHash` and `FileSize` and writes an index record, keyed by the
+NAR's URL path, to the bucket and to memory:
+
+```text
+<nix prefix>nar-index/<URL path>.json     e.g. nix/nar-index/nar/<file>.nar.zst.json
+{"url":"nar/<file>","fileHash":"<sha256, Nix base 32>","fileSize":<bytes>}
+```
+
+It lives in the bucket because the narinfo request and the NAR request
+can reach different replicas. On a NAR miss the record is looked up
+(memory, then bucket); the NAR is committed only when the streamed body's
+size and SHA-256 equal it. A mismatch aborts the upload (the client still
+receives the whole pass-through body) and is counted `verify_failed`. A
+NAR with no record (asked for without a narinfo through this cache) is
+passed through and never stored, counted `no_index`. Neither is an
+`upstream_error`.
+
+An upstream **404 or 410 reaches the client unchanged** (GOPROXY's comma
+falls through on exactly these two; Nix moves to its next substituter),
+remembered in memory for `-negative-ttl` (1 minute), never stored. Any
+other upstream failure is a 502.
+
+### The store's errors are never misses
+
+The bucket must answer a missing key with 404 (`NoSuchKey`), which needs
+`s3:ListBucket` on the prefix; without it S3 answers 403. The service
+treats only 404 as a miss. A 403 -- or any other store error -- is a 502
+(`store_error`): a role that lost its grant must not turn every request
+into an upstream fetch it can then never store. The presigned URLs are
+signed with the service's own credentials, so `s3:GetObject` on the
+prefix is also what authorizes every runner's redirected download; the
+credentials are refreshed `presignTTL` + 1 minute before they expire, so
+a URL is never signed with credentials about to lapse.
+`deploy/pulumi/runneridentity`'s `CacheRedirect` builds exactly this
+role for one prefix of a bucket (both front-end prefixes go under it,
+e.g. `cache-redirect/nix/`, `cache-redirect/goproxy/`, `cache-redirect/maven/`,
+`cache-redirect/gradle/` and `cache-redirect/npm/`); credentials
+come from the default AWS SDK chain, so EKS Pod Identity, IRSA, or the
+keys of `cacheRedirect.s3.existingSecret` for an S3-compatible store.
+
+### Nix front-end
+
+`/nix/nix-cache-info` is answered locally (`StoreDir: /nix/store`,
+`WantMassQuery: 1`, `Priority: 30` by default -- lower than
+cache.nixos.org's 40, which is what makes Nix prefer it; the order of
+`substituters` does not). `/nix/<hash>.narinfo` is stored **verbatim**:
+its signatures are over its content, and its relative `URL: nar/...`
+resolves against this cache. `/nix/nar/<file>` is the large object. A
+`HEAD` of a stored NAR is answered with its size (a presigned GET cannot
+answer a HEAD); a `HEAD` of one not stored is asked of upstream and
+stores nothing. Everything else (`/realisations/`, `/log/`, `.ls`) is a
+404.
+
+### Go front-end and the checksum database
+
+`/goproxy/<module>/@v/<version>.info` and `.mod` are stored and served
+directly; `.zip` is the large object. Only a **canonical** version
+(pseudo-versions and `+incompatible` included) is immutable: the go
+command also resolves a query (`master`, a commit) through
+`<query>.info`, whose answer moves, so that, `@v/list` and `@latest` are
+passed through and remembered in memory for `-mutable-ttl` (30 seconds),
+never stored. Module paths and versions keep the go command's `!`
+case-encoding byte for byte, in the store key and in the upstream URL.
+
+The checksum database is **proxied**: `/goproxy/sumdb/sum.golang.org/supported`
+answers 200, tiles (full and partial, both immutable by construction)
+are stored like any small object, and `lookup/` and `latest` are passed
+through. Answering `supported` with 404 instead would send every go
+command to sum.golang.org directly, so CI would need direct internet
+access for the checksum database even with every module cached; proxying
+removes that, and costs no trust: the go command verifies the database's
+signed tree heads and tiles itself, so a proxy can withhold an answer but
+cannot forge one. Set `goproxy.sumdb.name: ""` to send the go command to
+the database directly instead.
+
+### Maven front-end
+
+`/maven/<repo>/<Maven repository path>` pulls the Maven repositories a
+Gradle or Maven build declares through, one path per upstream:
+`central` (repo.maven.apache.org/maven2), `google`
+(dl.google.com/dl/android/maven2) and `gradle-plugins`. A repository
+is one upstream or a chain of them (`name=URL|URL`, `cacheRedirect.maven.repositories`),
+asked in order while the answer is a 404. The chain of `gradle-plugins` is
+Maven Central first and the Plugin Portal second: the Portal re-serves
+all of Central to a plugin (every transitive dependency of every plugin),
+rate limits a burst with 429, and only the plugin markers (and the few
+artifacts that live only there) are not on Central. The client keeps the
+order and meaning of the repositories it declared; an artifact is stored
+under the **repository's** name (`<prefix><repo>/<path>`), not an upstream's.
+
+Everything is immutable (stored) except the files that list versions and
+what changes with them: `maven-metadata*` (and its checksums and
+signatures), `*-index.xml` (Google's group indexes), `archetype-catalog*`
+and any file under a `...-SNAPSHOT/` directory are passed through and
+remembered for `-mutable-ttl`. An archive (`.jar`, `.aar`, anything not a
+descriptor) is a **large** object, a redirect on a hit; descriptors
+(`.pom`, `.module`), checksums and signatures are small. The front-end is
+read-only for clients, so it is safe on any tier. `GET /maven/` answers 200
+and lists the repositories: the probe a runner uses to learn the front-end
+is there before it points a build at it.
+
+Two things this front-end meets that the others did not:
+
+- **A User-Agent that names the sender.** Maven Central's CDN answers Go's
+  default User-Agent with 429 and a `retry-after` of tens of minutes once a
+  burst of a few hundred artifacts has been asked for; the same requests
+  with `cache-redirect (+https://github.com/truvity/ci-plane)` are served.
+  Every upstream request carries it.
+- **Retries.** An upstream that answers 429, 502, 503 or 504 is asked again
+  (up to 4 attempts, `-retry-backoff` times the attempt, or its
+  `Retry-After` capped at 5 seconds: the build waits for the answer, and
+  Gradle gives an upstream 30 seconds of silence) before the client sees a
+  502. The other front-ends do not retry.
+
+### npm front-end
+
+`cacheRedirect.npm.enabled` (**off by default**, on in both presets) serves the
+npm registry under `/npm` (or at the root of `hosts.npm`) to npm, yarn (berry)
+and pnpm: the client's registry is `http://cache-redirect.<ns>.svc.cluster.local/npm`
+or `https://<npm host>/`. It replaces the verdaccio of `npmCache`. Like Maven it
+is **read-only for clients**: publish, unpublish, dist-tag changes and login are
+405s, no credential is forwarded upstream, and a private registry or a publish
+is not something it can become. It is safe on any tier.
+
+- **Tarballs** (`/<package>/-/<basename>-<version>.tgz`, scoped names included)
+  are immutable and large: stored under `<prefix><package>/-/<file>`, a redirect
+  to a presigned URL on a hit, so an install's bytes do not pass through the
+  pod. The file name must be the package's own.
+- **Packuments** (`/<package>`, the metadata) are the hot path: one request per
+  dependency per resolution. They are mutable, so they are kept for
+  `freshTTL` (2 minutes) in memory and then **revalidated** with the ETag the
+  registry gave (a `304` costs no body). There are two variants, by `Accept`:
+  the *abbreviated* install document (`application/vnd.npm.install-v1+json`, what
+  all three clients ask for first) and the *full* one (`npm view`, and the `time`
+  that pnpm's `minimumReleaseAge` and yarn's age gate read); a request that does
+  not name the abbreviated type gets the full one, and the answer says
+  `Vary: Accept`. Full documents of busy packages are tens of megabytes, so the
+  front-end keeps up to 64 MiB per document in memory (the other front-ends'
+  limit is 8 MiB), answers gzip when the client accepts it, and gives its own
+  `ETag` (which depends on the address, see below) so a client that cached the
+  document gets a `304`.
+- **Stale on error.** The last document of each package and variant is also
+  stored, gzip-compressed, under `<prefix>_meta/<package>.<variant>`, whenever
+  it changes. When the registry is unreachable or answers 5xx/429 (after the
+  retries), the copy is served and counted as `result="stale"`; for the next 15
+  seconds the copy is served without asking again, so a down registry does not
+  cost every request the retries first. A package nobody has installed through
+  the service is a 502, not an invention. A stale copy lacks new publishes,
+  which is the right way to be wrong. The copy lives as long as the bucket's
+  expiry keeps it. With the registry unreachable, `npm`, yarn 4 and pnpm 11 all
+  installed a project from a restarted pod that had only the bucket.
+- **The tarball URLs are rewritten.** Every version in a packument carries
+  `dist.tarball` at `registry.npmjs.org`. npm replaces that host by the registry it
+  was given (`replace-registry-host`, default `npmjs`) and writes the original
+  URL into `package-lock.json`; **yarn 4 and pnpm 11 do not**: they build the URL
+  from the registry only when the document's is the same one, otherwise fetch the
+  document's, bypassing the cache, and record it in their lockfiles
+  (`__archiveUrl` in `yarn.lock`, `tarball:` in `pnpm-lock.yaml`). So the
+  front-end replaces `"tarball":"https://registry.npmjs.org/` by the address the
+  client reached it by (`https://<npm host>` or `<scheme>://<host>/npm`; the scheme
+  from `X-Forwarded-Proto`, the host from `Host`, which is checked to be a host
+  name), on the raw document at serve time, a byte replacement and not a parse. The
+  stored document is the registry's own, and the rewrite is per request because
+  the address depends on how the client arrived. Yarn and pnpm then see the URL
+  they would have computed, and their lockfiles stay free of the cache's address.
+  **The npm command is not rewritten for** (`User-Agent: npm/...`): its
+  lockfile would carry this service's address into every repository that
+  generates one through it, where `npm ci` fails for anyone who cannot reach it.
+  (An npm with `replace-registry-host=never` therefore fetches tarballs from the
+  registry directly; the install still works.)
+- **Audit and search** are passed through: `POST /-/npm/v1/security/advisories/bulk`
+  (npm 10+, `yarn npm audit`, `pnpm audit`) and the older `/audits[/quick]`, with their
+  `Content-Encoding` and body (32 MiB at most), and `GET /-/v1/search`. They are
+  not stored and not retried, and carry the same User-Agent as everything else.
+  `GET /-/ping` is answered locally (200), `GET /npm/` is the probe, and
+  `/-/package/<package>/dist-tags` is passed through briefly.
+- **Names.** A package arrives as `name`, `@scope/name` or `@scope%2fname`;
+  it is the same package, and the registry is asked in its `%2f` form. Names
+  are checked against the characters the registry allows (legacy names with
+  capitals included, no leading `.`, `_` or `-`) before they become a store key
+  and an upstream URL.
+- **Retries** as Maven's: 429, 502, 503 and 504 are asked again, up to four times.
+
+What is not here, compared with verdaccio: publishing and private packages
+(a private registry is a different component, not a mode of this one), per-scope upstreams (use `npmScopes`/`.npmrc`
+on the client), a web UI, authentication, and the offline cache of every package
+ever seen (the bucket's expiry bounds ours). What is: storage in a bucket instead
+of one volume that cannot be evicted, replicas across zones and rolling
+restarts, a tarball redirect to the bucket, and one component with the same
+metrics, identity and tests as the other front-ends.
+
+### Gradle build cache front-end
+
+`cacheRedirect.gradle.enabled` (**off by default**, on in both
+`presets/preview.yaml` and `presets/stable.yaml`) serves Gradle's remote build cache, the
+`HttpBuildCache` protocol, under `/gradle/cache/<key>`: a GET of a stored
+entry is a **redirect** to a presigned URL of it (Gradle follows it; verified
+with 8.14), a miss is a 404, and a PUT stores the entry. It is the one
+front-end that is **writable** by whoever can reach the service, so the
+network policy and the tier are what govern who may write. The stable tier
+has it on too: it is a separate deployment with a bucket of its own and a
+network policy that admits only stable runners, so what a stable job reads
+is only what a stable job wrote, never a preview job's. (Turning it on for
+stable was an owner decision, taken with that isolation in mind; a
+deployment whose tiers share a bucket or a service must leave it off.)
+
+A write is bounded, not authenticated: the key must be 32 to 128 hexadecimal
+digits (what Gradle sends, a hash of the task's inputs); `Content-Length` is
+required (411) and at most `gradle.maxEntryBytes` (default 512 MiB; 413
+above it, which Gradle reads as "too large to cache" and carries on); the
+body is committed only when it arrived whole (a cut-short upload is
+discarded, and a client that stops sending is let go after `-idle-timeout`);
+and **the first write of a key wins**: a later PUT of an existing key is a
+204 that changes nothing, so an entry already in the store cannot be
+replaced by another job's. `GET /gradle/cache/` answers 200: the probe.
+Metrics: `result` `stored` and `rejected` count the writes.
+
+The bucket's expiry ages entries out like everything else; a hot entry that
+expires is rebuilt and pushed again.
+
+### Metrics and operations
+
+`/metrics` (Prometheus text, `cacheRedirect.monitoring` renders a
+PodMonitor): `cache_redirect_requests_total{frontend,result}` with
+`result` one of `hit` (served from memory or the store), `redirect`,
+`miss` (pulled through), `not_found`, `upstream_error`, `store_error`,
+`verify_failed` (a NAR not matching its narinfo: served, not stored),
+`no_index` (a NAR with no narinfo record: served, not stored),
+`stored` and `rejected` (a client's write to the Gradle build cache),
+`stale` (an npm packument served from its stored copy because the registry failed);
+`cache_redirect_uploads_total{frontend,result="ok|failed"}`;
+`cache_redirect_upload_bytes_total{frontend}`;
+`cache_redirect_upstream_request_duration_seconds{frontend}` (a
+histogram of the time to upstream response headers); and
+`cache_redirect_fetches_in_flight`. `/healthz` answers 200 while the
+process serves. On SIGTERM it stops accepting, gives in-flight requests
+25 seconds, then aborts the uploads still running -- discarded, never
+committed.
+
+A down service degrades like every cache here: Nix falls through to the
+next substituter, and a GOPROXY comma fails the job loudly while a pipe
+would hide the outage. Gradle does not fall through: a repository that
+cannot be reached fails the resolution, which is why a client probes
+`/maven/` and `/gradle/cache/` before it points a build at them. npm, yarn
+and pnpm do not fall through either (`/npm/-/ping` and `/npm/` are the probes).
+
+## Persistent Nix workers are CI-only and separate from BuildKit
+
+The optional `nixWorkers` plane is one native StatefulSet per
+architecture, each with its own RWO `/nix` store. It deliberately does
+not reuse BuildKit pods or PVCs: rootless BuildKit and a privileged,
+sandboxed multi-user Nix daemon have incompatible security models, and
+sharing CPU, disk, GC and failure domains would let one cache evict or
+stall the other.
+
+The workers run their own image (`image/nix-worker`, split from the
+runner image on 2026-09-24). An init container imports the image's Nix
+closure into the persistent alternate-root store through Nix itself,
+including the validity database; raw copying or mounting an empty PVC
+over the baked store would produce an unusable image. The worker then
+runs `nix-daemon` with build users and exposes one machine login: `nix`,
+over the ssh-ng protocol, forced to `nix-daemon --stdio`. `sshd` forbids
+passwords, forwarding, TTYs and arbitrary commands. (v5.0.0 removed the
+legacy `nixremote` login, whose force-command accepted only
+`nix-store --serve`.)
+
+The estate supplies only the OpenBao HTTPS CA, one or more public keys
+of the environment's SSH user CA (exported, for example, as
+`sshUserCaPublicKeys`; the workers trust the same keys), and the public
+key of its SSH HOST CA, which the runners trust as an `@cert-authority`
+line. No host key is stored anywhere: each worker pod generates its own
+(see [below](#worker-host-certificates-and-ephemeral-host-keys)).
+Client private keys never enter Helm, OpenBao KV, ESO or Kubernetes
+Secrets: the runner generates an Ed25519 key in its pod-local
+`emptyDir`, exchanges a narrowly projected ServiceAccount JWT for an
+OpenBao SSH user certificate of at most one hour, and publishes the
+remote machines file only after validating that certificate: the one
+principal, the expected CA, the generated key, the requested lifetime,
+no critical options and no extension except `permit-pty` (signing roles
+commonly add it; the workers' `PermitTTY no` makes it inert).
+
+**Signing is per job, not per pod.** One hour is the signing role's
+ceiling and a warm runner idles far longer, so a certificate signed when
+the pod started would be expired by the time its job runs. The init
+container signs for a cold pod; an `ACTIONS_RUNNER_HOOK_JOB_STARTED`
+script re-runs the same setup as `runner` before the job's first step.
+That is why the runner container mounts the projected token and why its
+`~/.ssh` and `/etc/nix-builders` are writable `emptyDir`s: workflow code
+can read the token and the key, and could sign certificates of its own
+for the life of its pod. Namespace-only worker ingress, the one-hour
+certificate and the ephemeral single-job pod are the boundary; the token
+carries only the SSH signing policy. A job that runs longer than the
+certificate keeps building locally once its remote connections need a
+fresh certificate.
+
+OpenBao/network/signing failure publishes an empty machines file and
+starts the runner (or the job) normally, so local Nix remains the outage
+path. Stable host verification is mandatory and independent from
+client-certificate trust. NetworkPolicy admits only the listed runner
+namespaces. The worker has no service-account token, but egress remains
+available because fixed-output derivations must fetch sources; treat
+code admitted to this CI plane as trusted and keep the privileged
+workers on a dedicated, tainted build pool. Engineer keys, public
+ingress and workstation integration are intentionally absent: these
+workers are shared CI infrastructure, not developer machines.
+
+ARC adds a machines file and `builders-use-substitutes`, but does not set
+`max-jobs = 0`; local execution remains the outage fallback. The shared
+stores are caches, not artifact authorities or backups. Access by two
+organizations is an explicit shared-cache trust decision: either CI
+identity can submit writes to the same architecture store.
+
+### Worker host certificates and ephemeral host keys
+
+`nixWorkers.hostCertificate` is ON by default since v5.0.0. The worker
+generates an **ephemeral ed25519 host key per pod** at container start
+(`nix-worker-entrypoint.sh`, into the memory-backed runtime `emptyDir`;
+a fresh one on every container start, whatever an earlier container of
+the same pod left there discarded first) and signs it with an OpenBao
+SSH secrets engine — `cert_type=host`, `valid_principals` set to the
+worker's own DNS name, COMPUTED by the chart from the release namespace
+(`nix-worker-<arch>.<namespace>.svc.cluster.local`) rather than taken as
+a raw value, so a public repository never invites an estate-specific
+hostname into a values file. A client that trusts the signing CA's public
+key as an `@cert-authority` line (`arc-runners`'
+`nixBuilders.knownHosts.certAuthorities`) then trusts every worker that
+CA signs for. Nothing trusts the key itself, only the CA's signature on
+it, so a key that dies with its pod is strictly less to protect than a
+stable one in a Secret, and there is nothing to rotate: every restart is
+a rotation. The readiness probe (`nix-worker-healthcheck --readiness`)
+reports ready only while a certificate exists, parses, has at least
+`minRemaining` of validity left, AND certifies exactly this pod's host
+key — a fresh certificate for some other key is refused like a missing
+one.
+
+The static host key (`nixWorkers.ssh.existingSecret`, no default since
+v5.0.0) remains only as the explicit `hostCertificate.enabled: false`
+path: without a certificate a client can only pin the key, so it has to
+be stable, and the runners then set `nixBuilders.knownHosts.pinned:
+true`.
+
+Signing and renewal happen in the SAME container as sshd, not a separate
+init container: `nix-worker-entrypoint.sh` signs once before starting
+sshd (**fail-closed** — a failure here exits the container, because a
+worker's host identity has no degraded mode a client can fall back to
+mid-connection, unlike the runner-side user certificates below, which
+fail open) and then runs a background loop that re-signs every
+`renewEvery` (must stay under `certificateTTL`, checked at render time)
+and sends sshd SIGHUP. OpenSSH re-execs itself on SIGHUP, re-reading
+`sshd_config` and reloading a replaced `HostCertificate` from disk
+without dropping an already-established session — verified directly
+against this image's `sshd_config` (same PID throughout; the presented
+certificate's Key ID changed after the signal). A renewal failure logs
+and retries with backoff; it never tears down a running sshd whose
+current certificate is still valid.
+
+Signing is a SIBLING binary to the runner-side `nix-worker-client`
+(`image/nix-worker-host-cert`), not a mode flag on it: the two have
+unrelated validation policies (host vs. user certificates, exact
+principals vs. one fixed principal, no extensions at all vs.
+permit-pty-only), unrelated failure contracts (fail-closed here,
+fail-open there) and unrelated deployment targets (a persistent worker
+pod vs. an ephemeral runner pod). See that binary's own top-of-file
+comment for the full reasoning.
+
+The machine login, `nix` — the ssh-ng protocol via `nix-daemon
+--stdio` — is gated by `AuthorizedPrincipalsFile` content the chart
+renders from `nixWorkers.accounts.nix.principals` (`[ci-nix]` by default
+since v5.0.0; an empty list is refused, since it would leave no machine
+login at all).
+`sshd_config`'s `Match User nix` block is baked into every image
+unconditionally; whether the account is ever reachable is decided by
+whether `AllowUsers` gains `nix`, which `nix-worker-entrypoint.sh`
+computes at container start from that principals file. `trusted-users`
+in the Nix daemon config gains `nix` only when
+`nixWorkers.accounts.nix.trusted` is set — trusted users can import
+store paths WITHOUT signature verification, which is what Nix's
+sandboxing model exists to prevent. A remote build worker needs it
+(runners upload unsigned derivation inputs), so it is on by default
+since v5.0.0 — the same trust the removed `nixremote` login always had.
+
+### Runners over ssh-ng
+
+`arc-runners`' `nixBuilders.login.{user, principal, protocol}` chooses
+the machine login; since v5.0.0 the defaults are the only one the
+workers have: `user: nix`, `principal: ci-nix` (which must be in the
+worker's `nixWorkers.accounts.nix.principals` list — not necessarily
+`nix` itself, `AuthorizedPrincipalsFile` can require a narrower name
+than the account), `protocol: ssh-ng`. `nixBuilders.openbao.sshRole`
+(default `ci-nix`) names the signing role that issues for that
+principal. v5.0.0 removed the legacy `nixremote`/`ssh://` login and the
+deprecated top-level `sshUser` alias of `login.user`; setting `sshUser`
+is a render-time failure (`templates/removed-values.yaml`), not a
+silently ignored key.
+
+`nix-worker-client` validates a returned certificate against the
+configured principal and protocol: one principal, no extension but
+`permit-pty`. Under `ssh-ng` it additionally allows ONE critical option,
+`force-command`, and only when its value is exactly `nix-daemon --stdio`
+— what the worker's `Match User nix` block already forces server-side
+(`image/sshd_config`). This exists because OpenBao/Vault SSH roles apply
+their own `default_critical_options` regardless of what the request
+names, and this role's grant refuses a request that names
+`critical_options` at all, so the client can neither ask for
+`force-command` nor suppress it — it can only check what came back. A
+certificate forcing anything else is refused before any credential is
+published, the same fail-open contract as every other rejection here:
+local Nix builds remain available.
+
+`nixBuilders.knownHosts.pinned` (default `false` since v5.0.0) is
+independent of the login: unpinned, the runner's `known_hosts` is built
+ENTIRELY from `certAuthorities` (the workers' host CA line) and the
+pinned Secret is not mounted; `true` is the explicit static-key path,
+pinning each worker's static key from a Secret (for workers with
+`hostCertificate.enabled: false`). Unpinned with an empty
+`certAuthorities` list is refused at render time — that combination
+would trust nothing.
+
+**Verified directly**, no OpenBao involved: the real `nix-worker`
+image, a locally generated host key, a local CA standing in for the
+signing role (`ssh-keygen -s ‹ca› -n ci-nix -O force-command="nix-daemon
+--stdio" -O clear -O extension:permit-pty`), and the worker started with
+`nixWorkers.accounts.nix.{principals: [ci-nix], trusted: true}`'s
+container-level equivalent. `nix store ping --store 'ssh-ng://nix@…'`
+reports `Trusted: 1`; `nix build --store 'ssh-ng://nix@…' -f …` executes
+the derivation ON the worker and returns its real output; the worker's
+own daemon log reads `accepted connection from pid …, user nix
+(trusted)`. Rebuilt with `trusted: false`, the same store reports
+`Trusted: 0` and `nix copy --to` an unsigned path is refused
+(`lacks a signature by a trusted key`) — the exact restriction the
+values comment for `nixWorkers.accounts.nix.trusted` describes. An
+explicit command and a `-t` PTY request are both silently replaced by
+the forced command (`ForceCommand` overrides whatever the client asked
+for), and `PermitTTY no` refuses the pseudo-terminal. **No worker-side
+change was needed for any of this**: `Match User nix`'s `ForceCommand
+nix-daemon --stdio`, unqualified by `NIX_REMOTE`, reads the entrypoint's
+own exported `NIX_CONFIG` (including `trusted-users`) because OpenSSH
+session children inherit the environment `sshd` itself was started
+with — a real, load-bearing side effect of *when* the entrypoint script
+exports it, not a documented daemon feature, which is why it is written
+down here rather than left to be rediscovered.
+
+### People, over opkssh (the people pilot)
+
+Phases 1-2 above are machines only (CI runners, an OpenBao-signed
+certificate). This pilot adds a SEPARATE, independent credential path
+for PEOPLE onto the same `nix` account, plus a new `admin` account no
+certificate ever reaches: OpenPubkey SSH (opkssh), the same
+no-CA OIDC sign-in `truvity/tailscale`'s EC2 subnet routers already use.
+`AuthorizedKeysCommand` and `TrustedUserCAKeys`/`AuthorizedPrincipalsFile`
+are independent sshd mechanisms tried in turn for pubkey auth, so this
+never displaces or reorders phases 1-2 — a worker can run every
+combination of `accounts.nix`, `hostCertificate` and `opkssh` at once,
+and a worker with `opkssh.archs` empty (the default) renders exactly as
+it did before this feature existed.
+
+`opkssh`, `opksshuser` and the `admin` account are baked into every
+`nix-worker` image unconditionally (`image/nix-worker/Dockerfile`) —
+whether either is ever REACHABLE is decided entirely by
+`nixWorkers.opkssh.archs`, an explicit allow-list into `nixWorkers.archs`
+(the same shape as `truvity/tailscale`'s `opksshEnvs`): naming an
+architecture there is "one pilot worker", every other architecture's
+StatefulSet shares the image and the opkssh ConfigMap but never sets
+`NIX_WORKER_OPKSSH_ENABLED`, so `AllowUsers` never gains `admin` and
+`/etc/opk/{providers,auth_id}` render empty (`nix-worker-entrypoint.sh`).
+
+The OWN install steps (never opkssh's upstream `install-linux.sh`) for
+the same reason `truvity/tailscale` v1.11.0 stopped calling it: that
+script's OS-family detection does not recognize every base image, and
+owning the handful of steps it would have taken — create `opksshuser`,
+install the checksum-verified binary, write the sshd
+`AuthorizedKeysCommand` drop-in — costs less than depending on it.
+
+`/etc/opk` is a writable `emptyDir` in the chart, not the image's own
+directory: `readOnlyRootFilesystem: true` means opkssh's hardcoded
+`/etc/opk/{providers,auth_id}` paths (there is no flag to relocate them)
+could never be written at container start otherwise — the same reason
+`$runtime_dir` under `/run/nix-worker` exists for the CA-certificate
+files phases 1-2 use. `nix-worker-entrypoint.sh` rebuilds both files
+from the chart's ConfigMap every start, exactly the "empty means nobody"
+default the principals ConfigMap already establishes.
+
+`admin` is the one account on this worker with a real interactive shell
+and `sudo` (passwordless: there is no password authentication method to
+enter one against). `Match User admin` in `image/sshd_config` sets
+`ForceCommand none` — overriding the GLOBAL `ForceCommand` (`nologin`
+since v5.0.0 removed the legacy `nixremote` shim it used to be) that
+would otherwise force `admin`'s session through it too — and `PermitTTY yes`, the one place this worker grants a real
+terminal. `nix` stays `ForceCommand nix-daemon --stdio` regardless of
+which credential (certificate or opkssh) reached it: opkssh only adds a
+SECOND way in, never a different account or a different forced command.
+
+Trust in `nix.conf`'s `trusted-users` (`nixWorkers.accounts.nix.trusted`)
+is an EXISTING, independent toggle (phase 1) opkssh does not touch,
+override, or gate on: it is a property of the ACCOUNT (`nix`), not of
+which credential mechanism reached it, so it applies identically to a
+certificate-authenticated session and an opkssh-authenticated one.
+**This installation keeps `nix` trusted** (an install that already sets
+`accounts.nix.trusted: true` for its own CI principal, as the pre-existing
+value comment describes) — opkssh does not narrow this. That means
+EVERYONE who can reach `nix`, by either credential, can import a store
+path without signature verification, which CI's own builds then trust
+implicitly. Whether that population should stay this wide, or narrow to
+whoever also operates CI, is a decision for each installation's own
+identity policy to name explicitly (see the consuming estate's own
+access-control docs) — this chart does not decide it.
+
+## The image doctrine
+
+The image contains only what devbox cannot deliver: the nix + devbox
+bootstrap, bash-as-sh, the daemonless docker client + buildx, git-lfs, gh, and
+the Go build cache client. goreleaser-pro is deliberately absent: its
+licence forbids redistributing the binary, and this image is public.
+Everything else arrives per job from each repository's own
+`devbox.json`. Repo- or cluster-specific content in
+the image is a bug; the one documented debt is the baked in-cluster nix
+substituter (dead elsewhere, upstream fallback).
+
+**`git-lfs` ships because it is part of git** (v6.7.0, owner decision
+D627). GitHub-hosted runners carry it, and `actions/checkout` with
+`lfs: true` execs `git lfs` before any devbox environment exists, so on
+a runner without it the checkout fails with "Unable to locate
+executable file: git-lfs". It is a pinned static release binary
+(`GIT_LFS_VERSION`, Renovate-tracked, checked against the release's
+`sha256sums.asc`), and `git lfs install --system` configures the LFS
+filters in `/etc/gitconfig`. CI runs the built image as the runner
+user and asserts it.
+
+**`gh` ships because it is part of the GitHub toolchain** (v7.6.0, owner
+decision F3 A). GitHub-hosted runners carry the GitHub CLI, and the shared
+`auto-release` action in truvity/ci-actions needs bash, git and `gh` before
+any devbox environment exists; other jobs had each worked around its absence
+in their own repository. It is a pinned static release binary (`GH_VERSION`,
+Renovate-tracked, checked against the release's `gh_<version>_checksums.txt`
+in the same build) installed into `/usr/local/bin` at image build time, so a
+job needs neither root nor a download. The image holds no credential: the
+token is the job's `GH_TOKEN`. CI runs the built image as the runner user and
+asserts `gh --version`.
+
+**One Go cache client ships: `go-cache-plugin`.** The
+[truvity/ci-cache](https://github.com/truvity/ci-cache) agent sat beside
+it while the two were measured against each other, and was removed once
+the plugin won. `GOCACHEPROG` names a binary that must exist before the
+first `go` invocation of a job, and callers pin their own version of
+this image on their own schedule, so a client leaves the image only
+after nothing can still name it. The plugin itself leaves once
+ci-cache's setup action fetches it per job.
+
+A cache binary is in the image at all only because of that ordering
+rule: it has to pre-exist the `go` invocation it caches, which is
+exactly the kind of thing devbox cannot deliver in time. What it talks
+to, and everything about the cache itself, belongs to that repository
+and is not described here.
+
+**`sluisctl` ships for the same reason** (v4.2.0; `sluisctl` replaced
+`accessctl` in v5.2.0). On a store with no pod identity (Cloudflare R2,
+MinIO, Ceph), the Go cache client above reads its credential through
+the ordinary AWS SDK chain — an `AWS_CONFIG_FILE` naming a profile
+whose `credential_process` is `sluisctl cloudflare r2 <preset>`
+(the archived `arc-runners` chart's `awsConfig` value rendered one).
+That credential_process is invoked BY the cache client, and the cache
+client already has to pre-exist the first `go` invocation of a job — so
+whatever it in turn
+execs has to pre-exist it too, by the same ordering rule. `sluisctl`
+(truvity/sluis) asks the estate's sluis for a credential its Cloudflare
+module mints; a job that never names it leaves it idle on PATH. It is
+pinned and verified against that release's own `checksums.txt`,
+downloaded at build time rather than hand-pinned per architecture — see
+`image/runner/Dockerfile`'s own comment for why that is safer under a
+Renovate-driven version bump, not just shorter. Earlier releases of the image
+also carried truvity/cloudflare's `r2broker`, which `sluisctl r2`
+fronted; the broker is retired and sluis mints R2 credentials itself.
+
+Every version pin in the Dockerfile carries a `# renovate:` annotation
+— a pin without one is invisible, and invisible is indistinguishable
+from current. That includes the upstream runner base: `latest` was
+replaced with an annotated pin precisely so CVE pickups become renovate
+PRs instead of side effects.

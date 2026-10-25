@@ -1,0 +1,165 @@
+{{- if .Values.bazelRemote.enabled }}
+{{- $z := .Values.bazelRemote }}
+{{- if and $z.serviceAccount.create (not $z.serviceAccountName) }}{{ fail "bazelRemote.serviceAccountName is required when bazelRemote.serviceAccount.create is true" }}{{ end }}
+{{- if $z.s3.enabled }}
+{{- if not $z.s3.bucket }}{{ fail "bazelRemote.s3.bucket is required when bazelRemote.s3.enabled is true" }}{{ end }}
+{{- if not $z.s3.region }}{{ fail "bazelRemote.s3.region is required when bazelRemote.s3.enabled is true" }}{{ end }}
+{{- end }}
+{{- if $z.serviceAccount.create }}
+---
+# The ServiceAccount the estate's Pod Identity association names
+# (bazelRemote.serviceAccountName): the association is made against an
+# object that exists, and the pod is not admitted without it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $z.serviceAccountName }}
+  labels:
+    app.kubernetes.io/name: bazel-remote
+    app.kubernetes.io/part-of: ci-builders
+  {{- with $z.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+---
+# bazel-remote: a Bazel Remote Execution v2 API cache (moon's remote
+# task cache speaks it; moon has no native S3). Disk-backed by default:
+# zero IAM, cluster-local latency. bazelRemote.s3.enabled switches on
+# bazel-remote's S3 PROXY backend, which sits in FRONT of the same
+# local --dir disk rather than replacing it -- the PVC below stays the
+# working set either way. It is a CACHE either way: losing it costs one
+# cold rebuild (or, with S3, however much the disk hasn't re-warmed).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bazel-remote-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $z.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bazel-remote
+  labels:
+    app.kubernetes.io/name: bazel-remote
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO PVC
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bazel-remote
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bazel-remote
+        app.kubernetes.io/part-of: ci-builders
+    spec:
+      {{- with $z.serviceAccountName }}
+      # EKS Pod Identity binds an IAM role to a namespace + ServiceAccount
+      # pair. This must be the exact ServiceAccount the estate's Pod
+      # Identity association names, or the mismatch is SILENT: the pod
+      # starts, answers every read/write request, and the S3 backend
+      # simply has no credentials, so nothing lands in the bucket and
+      # nothing looks broken until someone measures the hit rate.
+      serviceAccountName: {{ . }}
+      {{- end }}
+      # The Service is named bazel-remote → k8s service links inject
+      # BAZEL_REMOTE_PORT=tcp://ip:8080, which the binary parses as its
+      # OWN --port env flag and crashes. Kill service-link envs.
+      enableServiceLinks: false
+      {{- $placement := include "ci-builders.placement" (dict "root" $) | fromJson }}
+      {{- with $placement.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $placement.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bazel-remote
+          image: {{ include "ci-builders.image" $z.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --dir=/data
+            - --max_size={{ $z.maxSizeGb }}
+            - --port=8080
+            - --grpc_port=9092
+            {{- if $z.s3.enabled }}
+            # S3 is a PROXY backend in front of --dir above (upstream
+            # bazel-remote docs): the PVC stays the working set and
+            # every read/write still goes through it first. auth_method
+            # iam_role with no --s3.iam_role_endpoint makes the minio
+            # client look for credentials in "the standard locations for
+            # the AWS platform" -- which is where EKS Pod Identity
+            # injects them (AWS_CONTAINER_CREDENTIALS_*), so no key
+            # material belongs in this chart.
+            - --s3.bucket={{ $z.s3.bucket }}
+            - --s3.region={{ $z.s3.region }}
+            # bazel-remote refuses to start without an endpoint (minio:
+            # "Endpoint: does not follow ip address or domain name
+            # standards"); the regional AWS one, since this backend is AWS only.
+            - --s3.endpoint=s3.{{ $z.s3.region }}.amazonaws.com
+            - --s3.auth_method=iam_role
+            {{- with $z.s3.prefix }}
+            - --s3.prefix={{ . }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9092
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml $z.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bazel-remote-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bazel-remote
+  labels:
+    app.kubernetes.io/name: bazel-remote
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  selector:
+    app.kubernetes.io/name: bazel-remote
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9092
+      targetPort: grpc
+      # The gRPC port speaks HTTP/2 without TLS. Declared so a gateway that
+      # reaches it over an HTTPRoute (Envoy Gateway reads this field) talks
+      # HTTP/2 to the pod rather than HTTP/1.1; kube-proxy and in-cluster
+      # clients ignore it.
+      appProtocol: kubernetes.io/h2c
+{{- end }}

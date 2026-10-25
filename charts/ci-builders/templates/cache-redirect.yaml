@@ -1,0 +1,304 @@
+{{- if .Values.cacheRedirect.enabled }}
+{{- $c := .Values.cacheRedirect }}
+{{- if not $c.s3.bucket }}{{ fail "cacheRedirect.s3.bucket is required when cacheRedirect is enabled" }}{{ end }}
+{{- if not $c.s3.region }}{{ fail "cacheRedirect.s3.region is required when cacheRedirect is enabled (\"auto\" for Cloudflare R2)" }}{{ end }}
+{{- if and $c.topologySpread.zone.enabled (int $c.topologySpread.zone.minDomains) (ne $c.topologySpread.zone.whenUnsatisfiable "DoNotSchedule") }}{{ fail "cacheRedirect.topologySpread.zone.minDomains needs whenUnsatisfiable: DoNotSchedule (Kubernetes refuses it with ScheduleAnyway)" }}{{ end }}
+{{- if not (or $c.nix.enabled $c.goproxy.enabled $c.maven.enabled $c.gradle.enabled $c.npm.enabled) }}{{ fail "cacheRedirect: nix, goproxy, maven, gradle and npm are all disabled; there is nothing to serve" }}{{ end }}
+{{- /* cacheRedirect.hosts: a request for the name of a front-end is served at that front-end's root (-hosts=kind=host). */}}
+{{- $hostsSeen := dict }}
+{{- range $kind, $host := $c.hosts }}
+{{- if $host }}
+{{- if not (get (dict "nix" $c.nix.enabled "maven" $c.maven.enabled "gradle" $c.gradle.enabled "npm" $c.npm.enabled) $kind) }}{{ fail (printf "cacheRedirect.hosts.%s is set but cacheRedirect.%s is disabled: a host name for a front-end that is off" $kind $kind) }}{{ end }}
+{{- if hasKey $hostsSeen (lower $host) }}{{ fail (printf "cacheRedirect.hosts: %q is given to both %s and %s; each front-end needs a host of its own" $host (get $hostsSeen (lower $host)) $kind) }}{{ end }}
+{{- $_ := set $hostsSeen (lower $host) $kind }}
+{{- end }}
+{{- end }}
+{{- range $name, $url := $c.maven.repositories }}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" $name) }}{{ fail (printf "cacheRedirect.maven.repositories: %q is not a repository name (letters, digits, '.', '_' and '-')" $name) }}{{ end }}
+{{- if not (regexMatch "^https?://" (toString $url)) }}{{ fail (printf "cacheRedirect.maven.repositories.%s: %q is not an http(s) URL" $name (toString $url)) }}{{ end }}
+{{- end }}
+---
+# cache-redirect: a pull-through cache for the Nix binary cache (/nix), the
+# Go module proxy (/goproxy), the Maven repositories (/maven) and the npm
+# registry (/npm) whose index is an S3 bucket, and, when enabled, the
+# Gradle remote build cache (/gradle). A hit on a large immutable object is
+# a 302 to a presigned URL of the bucket, so the bytes never pass through
+# these pods; small objects are served directly; a miss is fetched from
+# upstream once and committed only when whole.
+#
+# The pods hold no state: S3 is the only durable layer. Their identity is
+# the ServiceAccount's (Pod Identity / IRSA, estate-side wiring, scoped to
+# the prefixes below), or the keys of `s3.existingSecret` for a store with
+# no pod identity. The redirects are signed with that same identity.
+{{- if $c.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $c.serviceAccount.name }}
+  labels:
+    app.kubernetes.io/name: cache-redirect
+    app.kubernetes.io/part-of: ci-builders
+  {{- with $c.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache-redirect
+  labels:
+    app.kubernetes.io/name: cache-redirect
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  replicas: {{ $c.replicas }}
+  # Never take a ready pod away before its replacement is ready.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cache-redirect
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cache-redirect
+        app.kubernetes.io/part-of: ci-builders
+      {{- with $c.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $c.serviceAccount.name }}
+      enableServiceLinks: false
+      {{- $placement := include "ci-builders.placement" (dict "root" $) | fromJson }}
+      {{- with $placement.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $placement.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # One replica per node: what a burst of misses costs is the network
+      # of the node a pod runs on, so two pods on one node buy nothing.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cache-redirect
+        {{- if $c.topologySpread.zone.enabled }}
+        # One replica per availability zone (v7.5.3): a node or a zone lost
+        # takes one replica, not all of them.
+        - maxSkew: {{ $c.topologySpread.zone.maxSkew }}
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: {{ $c.topologySpread.zone.whenUnsatisfiable }}
+          {{- with $c.topologySpread.zone.minDomains }}
+          minDomains: {{ . }}
+          {{- end }}
+          # Count each ReplicaSet's pods apart: during a rollout the old
+          # ReplicaSet's pods would otherwise stand for zones the new one has
+          # not filled, and the new pods could share a zone and stay there.
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cache-redirect
+        {{- end }}
+      # The preStop sleep (drainDelaySeconds) runs first, then shutdown
+      # waits up to 25s for in-flight pull-throughs; an upload cut off past
+      # that is aborted, never committed half-written. The grace period
+      # must cover both.
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # distroless nonroot
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cache-redirect
+          image: {{ include "ci-builders.pinnedImage" .Values.cacheRedirectImage }}
+          args:
+            - -listen=:8080
+            - {{ printf "-s3-bucket=%s" $c.s3.bucket | quote }}
+            - {{ printf "-s3-region=%s" $c.s3.region | quote }}
+            {{- with $c.s3.endpoint }}
+            - {{ printf "-s3-endpoint=%s" . | quote }}
+            {{- end }}
+            {{- if $c.s3.pathStyle }}
+            - -s3-path-style=true
+            {{- end }}
+            - {{ printf "-presign-ttl=%s" $c.presignTTL | quote }}
+            - {{ printf "-nix=%t" $c.nix.enabled | quote }}
+            {{- if $c.nix.enabled }}
+            - {{ printf "-nix-prefix=%s" $c.nix.prefix | quote }}
+            - {{ printf "-nix-upstream=%s" $c.nix.upstream | quote }}
+            - {{ printf "-nix-priority=%d" (int $c.nix.priority) | quote }}
+            {{- end }}
+            - {{ printf "-goproxy=%t" $c.goproxy.enabled | quote }}
+            {{- if $c.goproxy.enabled }}
+            - {{ printf "-goproxy-prefix=%s" $c.goproxy.prefix | quote }}
+            - {{ printf "-goproxy-upstream=%s" $c.goproxy.upstream | quote }}
+            - {{ printf "-goproxy-sumdb=%s" $c.goproxy.sumdb.name | quote }}
+            - {{ printf "-goproxy-sumdb-upstream=%s" $c.goproxy.sumdb.upstream | quote }}
+            {{- end }}
+            - {{ printf "-maven=%t" $c.maven.enabled | quote }}
+            {{- if $c.maven.enabled }}
+            - {{ printf "-maven-prefix=%s" $c.maven.prefix | quote }}
+            {{- range $name, $url := $c.maven.repositories }}
+            - {{ printf "-maven-repo=%s=%s" $name $url | quote }}
+            {{- end }}
+            {{- end }}
+            - {{ printf "-gradle=%t" $c.gradle.enabled | quote }}
+            {{- if $c.gradle.enabled }}
+            - {{ printf "-gradle-prefix=%s" $c.gradle.prefix | quote }}
+            - {{ printf "-gradle-max-entry-bytes=%d" (int64 $c.gradle.maxEntryBytes) | quote }}
+            {{- end }}
+            - {{ printf "-npm=%t" $c.npm.enabled | quote }}
+            {{- if $c.npm.enabled }}
+            - {{ printf "-npm-prefix=%s" $c.npm.prefix | quote }}
+            - {{ printf "-npm-registry=%s" $c.npm.registry | quote }}
+            - {{ printf "-npm-fresh=%s" $c.npm.freshTTL | quote }}
+            {{- end }}
+            {{- range $kind, $host := $c.hosts }}
+            {{- if $host }}
+            - {{ printf "-hosts=%s=%s" $kind $host | quote }}
+            {{- end }}
+            {{- end }}
+            {{- range $c.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- with $c.s3.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          {{- if gt (int $c.drainDelaySeconds) 0 }}
+          # Keep serving while the endpoint is removed from the Service
+          # (kube-proxy and the like lag a few seconds behind the pod
+          # going Terminating); only then does SIGTERM close the listener.
+          # The native sleep action needs no shell (the image has none):
+          # Kubernetes 1.30+ (beta, on by default; GA in 1.34).
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ int $c.drainDelaySeconds }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+{{- if and $c.podDisruptionBudget.enabled (gt (int $c.replicas) 1) }}
+---
+# A voluntary disruption (node drain, consolidation) may take down all
+# but the pods this keeps; rendered only with more than one replica,
+# where minAvailable: 1 would otherwise block every drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cache-redirect
+  labels:
+    app.kubernetes.io/name: cache-redirect
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  minAvailable: {{ $c.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cache-redirect
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache-redirect
+  labels:
+    app.kubernetes.io/name: cache-redirect
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  {{- with $c.trafficDistribution }}
+  # Prefer an endpoint in the client's zone (kube-proxy and the gateways
+  # that read EndpointSlice hints); falls back to any ready endpoint.
+  trafficDistribution: {{ . }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: cache-redirect
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- if $c.networkPolicy.enabled }}
+---
+# Only the listed consumer namespaces may reach the service; a redirect
+# then sends them to the bucket, which this policy does not govern.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cache-redirect-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cache-redirect
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        {{- range $ns := $c.networkPolicy.consumerNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        {{- end }}
+      ports:
+        - port: 8080
+          protocol: TCP
+{{- include "ci-builders.additionalIngress" (dict "entries" $c.networkPolicy.additionalIngress "component" "cache-redirect" "port" 8080) }}
+{{- end }}
+{{- if $c.monitoring.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cache-redirect
+  labels:
+    app.kubernetes.io/name: cache-redirect
+    app.kubernetes.io/part-of: ci-builders
+    {{- with $c.monitoring.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cache-redirect
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      {{- with $c.monitoring.interval }}
+      interval: {{ . }}
+      {{- end }}
+{{- end }}
+{{- end }}

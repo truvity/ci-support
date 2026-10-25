@@ -1,0 +1,884 @@
+# ci-builders — the in-cluster CI builder and cache plane.
+#
+# Named for where it is going, not only for what it holds today: the
+# Go module proxy left in 2.0.0, and moving the nix, npm and Bazel
+# caches to truvity/ci-cache is tracked separately. What cannot leave
+# is the pair that builds — buildkitd and the nix workers.
+#
+# Image references are split {registry}/{repository}:{tag} so an estate
+# with an ECR pull-through cache overrides ONLY `registry` per
+# component family and inherits everything else. Empty registry means
+# the upstream registry (docker.io / ghcr.io).
+
+# The runner image. The nix workers run it, so its nix and its SSH
+# surface are the ones a remote build lands on.
+# `digest` is stamped by the release workflow; consumers override
+# `registry` (e.g. "123456789012.dkr.ecr.eu-example-1.amazonaws.com/github")
+# and inherit the digest, staying transitively digest-pinned by the
+# chart version.
+runnerImage:
+  registry: ghcr.io
+  repository: truvity/ci-plane/runner
+  digest: "" # sha256:… — stamped at release; empty renders the tag instead
+  tag: latest
+
+# The nix workers' own image (2026-09-24). They ran the RUNNER image
+# until now, with Kubernetes picking the role by overriding the command.
+# That worked and it meant neither half could be tuned: a worker wants a
+# store and an sshd, and was carrying a docker client, buildx, devbox,
+# goreleaser and two cache clients for nothing.
+#
+# Both images pin the SAME nix, and ci-plane's hack/nix-parity.sh refuses
+# a release where they disagree -- remote building is a protocol between
+# two nix installations, and a mismatch surfaces as a confusing build
+# rather than as a version error.
+#
+# Required whenever nixWorkers is enabled (v5.0.0 removed the fallback
+# to runnerImage: the runner image no longer carries the worker role).
+nixWorkerImage:
+  registry: ghcr.io
+  repository: truvity/ci-plane/nix-worker
+  digest: "" # sha256:… — stamped at release; empty renders the tag instead
+  tag: latest
+
+# cache-redirect's own image (`cacheRedirect` below): a static Go binary
+# on distroless. Stamped at release like the two above.
+cacheRedirectImage:
+  registry: ghcr.io
+  repository: truvity/ci-plane/cache-redirect
+  digest: "" # sha256:… — stamped at release; empty renders the tag instead
+  tag: latest
+
+# Scheduling and storage defaults shared by every component. Empty by
+# default (component contract C13: estate facts are inputs, never
+# defaults). An empty storageClassName renders NO `storageClassName` field
+# on a PVC at all, which Kubernetes reads as "use the cluster's default
+# StorageClass". That is not the same as an explicit empty string, which
+# Kubernetes reads as "no class" -- the templates omit the field rather
+# than render it empty.
+
+# NODE CLASSES (v7.0.0): where a pod may run, as data YOU define. A class
+# is a name you choose, mapped to a nodeSelector and/or tolerations; a
+# preset, a per-architecture block or the whole release then refers to the
+# NAME. The chart ships no class and knows no pool, label or taint of any
+# platform. Map a class to whatever your nodes carry:
+#
+#   nodeClasses:
+#     builders-arm64:           # a pool: its label and taint
+#       nodeSelector: {example.com/pool: build}
+#       tolerations:
+#         - {key: example.com/build, value: "true", effect: NoSchedule}
+#     cache-plane: {}           # a class that places nothing
+#
+# The class used for a builder carries the pool, not the architecture:
+# the chart adds `kubernetes.io/arch` itself for buildkitd and the Nix
+# workers. A class a preset or a values file names but you did not define
+# is a render error (a typo must not schedule a builder anywhere); define
+# it empty, as `cache-plane` above, to place nothing. The presets
+# (presets/preview.yaml, presets/stable.yaml, presets/nix-workers.yaml)
+# name `builders-arm64`, `builders-amd64` and `cache-plane`.
+nodeClasses: {}
+
+# The class of every component that has no placement of its own: the
+# caches, the Go module proxy, cache-redirect, and buildkitd / the Nix
+# workers for an architecture whose `scheduling.<arch>.nodeClass` is
+# unset. Empty: no class. An explicit `nodeSelector` / `tolerations`
+# below, when not empty, wins over the class's own for that one key.
+nodeClass: ""
+
+# SIZES (v7.0.0): a taxonomy of builder sizes, as data YOU define. A size
+# is a name you choose, mapped to the keys a builder takes: for buildkitd
+# `resources` and `maxParallelism`, for the Nix workers `resources`,
+# `maxJobs` and `cores`. A builder picks one by name with `size:`
+# (buildkitd.size, nixWorkers.size). The chart ships none. A size REPLACES
+# the component's own value for each key it sets (the chart's defaults for
+# those keys cannot be told from yours, so a merge would leave stray
+# defaults behind); a key the size leaves out keeps the component's. An
+# undefined name is a render error.
+#
+#   sizes:
+#     medium:
+#       maxParallelism: 4
+#       resources:
+#         requests: {cpu: "1", memory: 4Gi}
+#         limits: {memory: 10Gi}
+#
+#   buildkitd:
+#     size: medium
+sizes: {}
+
+nodeSelector: {}
+tolerations: []
+storageClassName: ""
+
+buildkitd:
+  # Rootless BuildKit builders, one single-replica StatefulSet per arch,
+  # registered client-side as one buildx builder (--driver remote) so
+  # multi-platform builds split natively, no QEMU. The daemon never
+  # ships to runners — client-only docker + buildx live in the runner
+  # image. StatefulSet because the PVC is the HOT layer cache and two
+  # daemons must never share a store; the WARM layer is cache-to
+  # type=registry and survives builder replacement.
+  enabled: true
+  archs: [arm64, amd64]
+  image:
+    registry: docker.io
+    repository: moby/buildkit
+    # renovate: datasource=docker depName=moby/buildkit
+    tag: v0.33.0-rootless
+  initImage:
+    registry: docker.io
+    repository: library/busybox
+    tag: "1.38"
+  cacheSize: 50Gi
+  # Cap on the build steps one daemon runs at once, rendered as
+  # `--oci-max-parallelism=<n>`. UNSET by default: no flag, buildkitd
+  # runs as many steps as its clients send. Without a cap, a burst of
+  # concurrent builds multiplies the working set until the container
+  # limit OOM-kills the daemon and every build on it fails together
+  # (12 concurrent builds, 2026-10-11). Set a positive integer sized to
+  # the memory limit below; excess steps queue instead of dying.
+  # maxParallelism: 4
+  # Probes: all three run `buildctl debug workers` against the daemon.
+  # Readiness takes the builder out of its Service while it cannot answer.
+  # Liveness restarts the container when it STAYS unable to: a builder
+  # starved of CPU by a burst of builds stops answering and does not
+  # recover by itself, so every client fails until someone deletes the
+  # pod. OFF by default, because a restart kills the builds in flight (an
+  # outage of that kind kills them all anyway, and for hours). With it on,
+  # the container is restarted after failureThreshold x periodSeconds
+  # (180s) of failed checks, and the startup probe holds liveness off until
+  # the daemon has answered once: a restart can take minutes to load the
+  # cache index, and failureThreshold x periodSeconds here is how long it
+  # may take (600s) before the kubelet gives up on it. Liveness needs
+  # startup; the chart refuses one without the other.
+  probes:
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 30
+      # The kubelet's default is 1s, which a busy daemon misses while it
+      # is still serving builds.
+      timeoutSeconds: 5
+    liveness:
+      enabled: false
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 6
+    startup:
+      enabled: false
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 20
+  resources:
+    # No CPU limit: builds burst to whatever the node has free; the
+    # request is scheduling headroom only. A node with few cores takes the
+    # limit from the estate (`resources.limits.cpu`): a burst that takes
+    # every core starves the kubelet, and the node, not just the builder,
+    # stops answering.
+    #
+    # Sized from an OBSERVED build peak, not from idle. The 2026-08-27
+    # sizing (500m/1.5Gi request, 3Gi limit) read idle RSS at ~58Mi and
+    # assumed the layer cache stayed on the PVC. Both premises are
+    # false in service: a builder holds its cache index in memory
+    # (arm64 measured at 2085Mi with the PVC 77% full), and on a
+    # DEDICATED pool Karpenter sizes the node from the REQUEST -- so
+    # 1.5Gi bought a .medium, whose 3.17Gi allocatable the 3Gi limit
+    # then claimed in full. A pod permitted to reach the node's whole
+    # allocatable is not a pod with headroom; it is the guaranteed OOM
+    # victim.
+    #
+    # What that cost: buildkitd-amd64 OOMKilled (exit 137) partway
+    # through a JS image build, every time. A dead server reaches the
+    # client as "rpc error: code = Unavailable ... EOF", so the symptom
+    # names the connection and not the memory -- it read as a network
+    # fault for a day (2026-09-05).
+    #
+    # 4Gi of request moves the pod onto a .large (8Gi raw, ~7.1Gi
+    # allocatable) with no change to the estate's pool categories, and
+    # the 6Gi limit leaves ~1Gi for kubelet and the system daemons.
+    requests:
+      cpu: 1000m
+      memory: 4Gi
+      ephemeral-storage: 2Gi
+    limits:
+      memory: 6Gi
+      ephemeral-storage: 10Gi
+  networkPolicy:
+    # Only listed namespaces may reach the builders: your runner
+    # namespaces, one per arc-runners release. REQUIRED while the policy
+    # is on, and empty by default -- a builder that admits nobody cannot
+    # work, so values.schema.json refuses the empty list rather than
+    # rendering a policy that silently locks every runner out. Set
+    # `enabled: false` to run without a policy.
+    enabled: true
+    consumerNamespaces: []
+    # Extra ingress beside consumerNamespaces, one additive NetworkPolicy
+    # per entry (policies union), for a peer the consumer namespaces do not
+    # describe. Empty by default. Each entry: `name` (the policy's name),
+    # `from` (NetworkPolicyPeer objects, as given), optional `annotations`
+    # and `arch` (one architecture's pods only). The port is the builder's.
+    #
+    #   additionalIngress:
+    #     - name: buildkitd-from-router
+    #       annotations: {}
+    #       from:
+    #         - namespaceSelector: {matchLabels: {example.com/router: "true"}}
+    #           podSelector: {matchLabels: {app.kubernetes.io/name: router}}
+    additionalIngress: []
+  # The name of a size under `sizes` above; empty applies none.
+  size: ""
+  # Annotations for the builder pods. Empty by default: no platform
+  # annotation is assumed. A builder mid-build is not migratable state, so
+  # an autoscaler that consolidates nodes needs the annotation that stops
+  # it (Karpenter: `karpenter.sh/do-not-disrupt: "true"`, which
+  # presets/karpenter.yaml sets).
+  podAnnotations: {}
+  # Per-arch scheduling override. Empty = the chart default
+  # (kubernetes.io/arch selector + the release-wide placement above). An
+  # estate whose arches live on different pools names a class for each:
+  #
+  #   scheduling:
+  #     arm64: {nodeClass: builders-arm64}
+  #     amd64: {nodeClass: builders-amd64}
+  #
+  # or writes the nodeSelector / tolerations wholesale (the block REPLACES
+  # the default when present; the arch selector is then yours to write).
+  scheduling:
+    arm64: {}
+    amd64: {}
+
+  # mutual TLS. OFF by default: nothing below renders and the
+  # plain builders above are untouched.
+  #
+  # WHY A SECOND SET OF BUILDERS, NOT A FLAG ON THE FIRST. buildkitd's TLS
+  # is one setting for the whole process: --tlscert/--tlskey/--tlscacert
+  # wrap EVERY tcp:// --addr in the same tls.Config (cmd/buildkitd,
+  # getListener; only unix:// sockets stay plain). One daemon cannot serve
+  # plain TCP to the runners that have not moved yet and mTLS to the ones
+  # that have, and two daemons cannot share one cache directory. So the
+  # transition is a second, TLS-only StatefulSet per arch, with its own
+  # cache volume (cold at first; the warm layer is cache-to
+  # type=registry), beside the plain one:
+  #
+  #   1. enabled: true         both sets run; clients move at their pace
+  #                            (plain endpoint -> mTLS endpoint is a client
+  #                            setting, and reverting it is the rollback).
+  #   2. retirePlain: true     once no client uses the plain endpoint, the
+  #                            plain StatefulSets, Services and policies go
+  #                            (their cache volumes are left to the PVC
+  #                            retention of the cluster; delete by hand).
+  #
+  # Objects are named buildkitd-mtls-<arch> and labelled
+  # app.kubernetes.io/name: buildkitd-mtls, so a plain Service can never
+  # select a TLS pod (nor the reverse).
+  #
+  # Certificates are re-read only when the daemon starts: a renewed server
+  # certificate reaches buildkitd with the next pod restart, which must
+  # happen before the old certificate expires (see docs/mtls.md).
+  #
+  # IN PLACE (mode: inPlace). The other way to the same end: no second
+  # set. The plain StatefulSet buildkitd-<arch> is itself changed to serve
+  # mutual TLS (the certificate and client CA mounted, --tls* set, the plain
+  # tcp listener gone), keeping its Service, its cache volume (warm) and its
+  # node, so nothing is added and the cache survives. There is no period in
+  # which both kinds are served: every client must dial with TLS from the
+  # moment the pod restarts, so it is switched in the same change as the
+  # clients (the runners). Rolling back is switching mode back to parallel
+  # (the plain listener returns, the cache still there) and the clients
+  # back with it. retirePlain does not apply. A renewed server certificate
+  # restarts the pod by itself when stakater/Reloader runs in the cluster
+  # (reloader.enabled, the default, adds its annotations in this mode).
+  mtls:
+    enabled: false
+    # parallel (default): TLS builders beside the plain ones (the sequence
+    # above). inPlace: the plain builders become the TLS ones.
+    mode: parallel
+    retirePlain: false
+    # inPlace only: annotate the StatefulSets for stakater/Reloader
+    # (secret.reloader.stakater.com/reload on the server certificate Secret,
+    # configmap.reloader.stakater.com/reload on the client CA ConfigMap).
+    # Harmless where no Reloader runs; then restart by hand (docs/mtls.md).
+    reloader:
+      enabled: true
+    # The server certificates (cert-manager), one per arch, mounted at
+    # /etc/buildkit/tls. The names are estate facts and belong to the
+    # estate's values; so does the issuer.
+    serverCertificate:
+      # false = bring your own: a Secret named buildkitd-mtls-<arch>-tls
+      # with tls.crt and tls.key must exist in the release namespace.
+      create: true
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      # dnsNames per arch: the names clients dial (the SNI the gateway
+      # routes on). The first one is also the certificate's common name.
+      #   dnsNames:
+      #     arm64: [buildkitd-arm64.example.private]
+      #     amd64: [buildkitd-amd64.example.private]
+      dnsNames: {}
+      duration: 2160h
+      renewBefore: 720h
+      privateKey:
+        algorithm: ECDSA
+        size: 384
+    # The ONE client CA: the only authority the builders accept client
+    # certificates from (--tlscacert). Dedicated, so a certificate the
+    # estate's general private CA issues for some other workload does not
+    # open a builder. Its public half is read from a ConfigMap, key ca.crt,
+    # mounted at /etc/buildkit/client-ca.
+    clientCA:
+      configMapName: buildkitd-client-ca
+      # true = this chart also builds the CA (the cnpg-cluster chart's
+      # pattern): a self-signed Issuer and the CA Certificate in
+      # `namespace`, a ClusterIssuer that signs with it, an
+      # approver-policy CertificateRequestPolicy bounding what that issuer
+      # may sign, and a trust-manager Bundle publishing the CA
+      # certificate (never its key) to the ConfigMap above. Needs
+      # cert-manager, approver-policy and trust-manager; an estate whose
+      # approver-policy only acts on signers it is told about must list
+      # clusterissuers.cert-manager.io/<issuerName>.
+      create: false
+      issuerName: ci-buildkit-client
+      # cert-manager's cluster resource namespace: where a ClusterIssuer
+      # reads its CA Secret.
+      namespace: cert-manager
+      duration: 87600h
+      # Common name every client certificate must carry (the policy
+      # refuses any other), and the namespaces that may request them
+      # (the runner namespaces, e.g. arc-runners-<company>).
+      commonName: ci-runner
+      requesterNamespaces: []
+      # The ServiceAccount cert-manager requests as, that must `use` the
+      # policy.
+      requester:
+        name: cert-manager
+        namespace: cert-manager
+      policy:
+        enabled: true
+      bundle:
+        enabled: true
+      # Client identities for runners OUTSIDE the cluster (serverless
+      # runners, say), each an identity of its own, not a copy of the
+      # in-cluster runners' (commonName above). Needs create: true. Per
+      # entry, in the RELEASE namespace (which must not be in
+      # requesterNamespaces): a cert-manager Certificate with the entry's
+      # own common name, a CertificateRequestPolicy that admits exactly
+      # that name from exactly this namespace, and, with push.enabled, an
+      # External Secrets PushSecret that copies ca.pem (push.caPem, the
+      # bundle the client trusts the builders' server certificate by),
+      # cert.pem and key.pem to a store the estate owns. The builders still
+      # verify only the chain to the one client CA; the policy decides who
+      # is issued one. docs/mtls.md#clients-outside-the-cluster.
+      externalClients: {}
+      #  outside:
+      #    commonName: ci-runner-outside       # not clientCA.commonName
+      #    secretName: ""                      # default buildkit-client-<name>-tls
+      #    duration: 2160h
+      #    renewBefore: 720h
+      #    privateKey: {algorithm: ECDSA, size: 384}
+      #    push:
+      #      enabled: false
+      #      storeRef: {name: "", kind: ClusterSecretStore}
+      #      refreshInterval: 1h               # shorter than the renewal margin
+      #      names: {ca: ca, cert: cert, key: key}   # remote names, relative to the store's own prefix
+      #      secretType: SecureString
+      #      kmsKeyId: ""                      # empty: the provider's default key
+      #      tags: {}
+      #      caPem: ""                         # required while push.enabled
+    networkPolicy:
+      # Who may reach the TLS builders: buildkitd.networkPolicy.
+      # consumerNamespaces (the same runners) and these additive
+      # entries, e.g. the private gateway's namespace. Same entry shape
+      # as buildkitd.networkPolicy.additionalIngress.
+      additionalIngress: []
+
+nixWorkers:
+  # Persistent remote Nix builders, one native worker per architecture.
+  # Disabled by default because enabling requires at least one public key
+  # of the OpenBao SSH user CA the runners sign on
+  # (`ssh.trustedUserCAKeys`, the same keys as arc-runners'
+  # nixBuilders.openbao.sshCAPublicKeys) and, with host certificates on
+  # (the default), the OpenBao route the workers sign their own host keys
+  # on (`openbao.*`). Client private keys are ephemeral and never enter a
+  # Secret; with host certificates on, neither does the host key.
+  enabled: false
+  archs: [arm64, amd64]
+  ssh:
+    # The static host key, read ONLY when hostCertificate.enabled is
+    # false: without a certificate a client can only pin the key, so it
+    # has to be stable across restarts, and it lives in this Secret.
+    # REQUIRED in that mode, no default (v5.0.0). With host certificates
+    # on (the default) the worker generates an ephemeral host key per
+    # pod instead and nothing is mounted from here.
+    existingSecret: ""
+    hostPrivateKeyKey: ssh_host_ed25519_key
+    trustedUserCAKeys: []
+
+  # ServiceAccount + projected OpenBao token (host certificates, phase
+  # 1). Created and bound to the pod ONLY when hostCertificate.enabled
+  # below: an install that leaves it off keeps the worker's current
+  # identity posture exactly (automountServiceAccountToken: false, no
+  # serviceAccountName at all) -- this section changes nothing for it.
+  serviceAccount:
+    create: true
+    name: nix-worker
+    # ~1h: long enough that a renewal a few minutes late (backoff, a
+    # slow OpenBao) does not lose the token mid-retry; short enough that
+    # kubelet keeps rotating it for the life of the pod.
+    tokenExpirationSeconds: 3600
+
+  # Host certificates: the worker generates an EPHEMERAL ed25519 host key
+  # per pod at startup (never stored in a Secret or anywhere else) and
+  # signs it with an OpenBao SSH secrets engine, so a client's
+  # known_hosts trusts one `@cert-authority` line instead of pinning a
+  # host key (charts/arc-runners' nixBuilders.knownHosts.certAuthorities,
+  # which is what actually consumes this). ON by default since v5.0.0,
+  # which makes `openbao.*` below required whenever the workers are
+  # enabled. `enabled: false` is the explicit static-key path:
+  # `ssh.existingSecret` above then supplies a stable host key clients
+  # pin (arc-runners' nixBuilders.knownHosts.pinned: true).
+  hostCertificate:
+    enabled: true
+    # Re-signed this often by a background loop in the SAME container
+    # (nix-worker-entrypoint.sh) that then SIGHUPs sshd -- OpenSSH
+    # re-executes on SIGHUP and reloads a replaced HostCertificate
+    # without dropping an established session. Must stay well under
+    # certificateTTL: a renewal landing after the current certificate
+    # has already expired is a worker no client can still reach. The
+    # chart refuses to render otherwise (templates/nix-workers.yaml).
+    renewEvery: 12h
+    certificateTTL: 24h
+    # Below this much validity left on the CURRENT host certificate,
+    # the readiness probe (never startup or liveness -- see
+    # image/nix-worker-healthcheck.sh: killing a pod that still serves
+    # under a still-valid certificate would drop sessions for no
+    # reason) reports not-ready. With the defaults above, hitting this
+    # floor means the renewal loop has already been silently failing
+    # for about 10h (24h TTL, 12h renewEvery, 2h floor).
+    minRemaining: 2h
+
+  # No estate defaults: a wrong auth mount or role fails every sign
+  # attempt with nothing safe to guess, so each is required render-time
+  # when hostCertificate.enabled (templates/nix-workers.yaml).
+  openbao:
+    address: ""
+    caBundle: "" # base64-encoded PEM of OpenBao's HTTPS issuer CA
+    namespace: ""
+    authMount: ""
+    authRole: ""
+    audience: openbao
+    hostSshMount: ssh   # the SSH secrets engine mount
+    hostSshRole: host   # its host-signing role; must allow cert_type=host
+    requestTimeout: 15s
+
+  # The machine login: `nix`, over the ssh-ng protocol (`nix-daemon
+  # --stdio`). v5.0.0 removed the legacy `nixremote` login
+  # (`nix-store --serve`) together with its `accounts.nixremote` toggle;
+  # setting that key is now a render-time failure
+  # (templates/removed-values.yaml).
+  accounts:
+    nix:
+      # AuthorizedPrincipalsFile content for the `nix` account: the
+      # certificate principal(s) that may log in as it. The default,
+      # ci-nix, is what arc-runners' nixBuilders.login.principal signs
+      # for by default. Must not be empty: with no principal and no
+      # legacy login left the worker would admit no machine at all, so
+      # the chart refuses to render that (templates/nix-workers.yaml).
+      principals: [ci-nix]
+      # trusted-users lets an account import store paths WITHOUT
+      # signature verification -- which a remote build worker needs:
+      # runners upload unsigned derivation inputs. On by default since
+      # v5.0.0, exactly the trust the removed `nixremote` login always
+      # had; set false only for a worker that never receives builds this
+      # way.
+      trusted: true
+
+  # opkssh (the people pilot): OIDC sign-in with no CA, onto the
+  # SAME `nix` account as accounts.nix above (people and CI share it) and
+  # a separate `admin` shell account (interactive, sudo) opkssh alone can
+  # reach. ADDITIVE and OFF by default: accounts.nix and
+  # hostCertificate above are UNCHANGED either way -- this only adds a
+  # second, independent credential path onto accounts the OpenBao
+  # certificate route above already owns.
+  opkssh:
+    # Explicit allow-list of architectures this worker renders opkssh
+    # for. Empty (the default) means every worker renders exactly as it
+    # did before this feature existed -- the account, the binary and the
+    # AuthorizedKeysCommand line are always in the image, but nothing in
+    # AllowUsers or /etc/opk ever changes. This pilot names exactly ONE
+    # worker: naming one architecture here (e.g. ["amd64"]) turns opkssh
+    # on for that arch's StatefulSet alone, leaving the other(s)
+    # untouched -- the same allow-list shape as
+    # truvity/tailscale's router rollout (opksshEnvs).
+    archs: []
+    # The access-roster OIDC issuer and the opkssh client's own client_id
+    # (a distinct client, never a browser client's -- this pilot's own
+    # design: reusing one would let a token minted for one purpose be
+    # replayed against the other). Required when archs above is
+    # non-empty; the chart refuses to render otherwise
+    # (templates/nix-workers.yaml).
+    issuer: ""
+    clientId: opkssh
+    # opkssh's own /etc/opk/providers "expiration" column: how long a
+    # signed-in session's certificate stays valid before a fresh
+    # `opkssh login` is required.
+    expiration: 24h
+    # /etc/opk/auth_id identity values, already dot-rewritten for
+    # opkssh's own colon-splitting parser (access-roster's per-audience
+    # `groups_delimiter`) -- e.g. "<env>.nix-workers.user" /
+    # "<env>.nix-workers.admin", never the colon form. Empty (the
+    # default) admits nobody through that account even when archs above
+    # is non-empty: the account exists and is reachable, but no token
+    # matches.
+    nixGroup: ""
+    adminGroup: ""
+
+  # Each architecture owns its store. The stores are deliberately not
+  # shared with BuildKit: independent capacity, GC and failure domains.
+  storeSize: 100Gi
+  buildDirSize: 40Gi
+  maxJobs: 2
+  cores: 4
+  minFreeBytes: "10737418240" # 10 GiB: start GC pressure handling
+  maxFreeBytes: "21474836480" # 20 GiB: GC back to this headroom
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+      ephemeral-storage: 10Gi
+    limits:
+      cpu: "4"
+      memory: 16Gi
+      ephemeral-storage: 50Gi
+  networkPolicy:
+    # REQUIRED while nixWorkers and the policy are on: the runner
+    # namespaces that may reach the workers (see buildkitd.networkPolicy).
+    enabled: true
+    consumerNamespaces: []
+    # Extra ingress beside consumerNamespaces, one additive NetworkPolicy
+    # per entry, exactly as buildkitd.networkPolicy.additionalIngress; the
+    # port is the workers' SSH port. `arch` narrows an entry to one
+    # architecture's worker (a pilot on a single worker).
+    additionalIngress: []
+  # The name of a size under `sizes` above; empty applies none.
+  size: ""
+  # Empty by default (C13): the same as buildkitd's podAnnotations above.
+  podAnnotations: {}
+  # Per-arch placement, as buildkitd.scheduling: a `nodeClass` per
+  # architecture, or nodeSelector / tolerations written out.
+  scheduling:
+    arm64: {}
+    amd64: {}
+
+cacheRedirect:
+  # cache-redirect: a pull-through cache for the Nix binary cache, the
+  # Go module proxy, the Maven repositories and the npm registry that keeps its index in an S3 (or S3-compatible) bucket
+  # and answers a hit on a large immutable download -- a NAR, a module zip
+  # -- with a 302 to a short-lived PRESIGNED URL of that bucket. The bytes
+  # then flow from the object store to the runner directly; these pods
+  # handle only small requests, so no one pod's node network is the
+  # bottleneck of a CI burst. A miss is fetched from upstream once, streamed
+  # to the client while it is uploaded, and committed only when it arrived
+  # whole. See docs/architecture.md ("cache-redirect").
+  #
+  # Clients (every front-end on the one Service, port 80; or at the root of
+  # a name of its own, `hosts` below):
+  #   nix:      substituters = http://cache-redirect.<ns>.svc.cluster.local/nix https://cache.nixos.org/
+  #   go:       GOPROXY=http://cache-redirect.<ns>.svc.cluster.local/goproxy|https://proxy.golang.org,direct
+  #   maven:    url = http://cache-redirect.<ns>.svc.cluster.local/maven/central (and /google, /gradle-plugins)
+  #   gradle:   url = http://cache-redirect.<ns>.svc.cluster.local/gradle/cache/   (when enabled below)
+  #   npm:      registry = http://cache-redirect.<ns>.svc.cluster.local/npm            (when enabled below)
+  # A host name of its own for a front-end (`hosts`, v7.7.0): see below.
+  # Runners must be able to reach the bucket's endpoint themselves (a VPC
+  # gateway endpoint, or egress to it): that is where a redirect sends them.
+  #
+  # Off by default: it needs a bucket and an identity that may use it.
+  enabled: false
+  replicas: 2
+  # Seconds the pod keeps serving after it is told to stop (a preStop
+  # sleep), so the Service stops sending it traffic before the listener
+  # closes; without it a rollout refuses connections for a few seconds.
+  # 0 renders no preStop hook. Needs Kubernetes 1.30+ (native sleep action).
+  drainDelaySeconds: 10
+  # Must cover drainDelaySeconds plus the 25s the server gives in-flight
+  # requests on shutdown.
+  terminationGracePeriodSeconds: 45
+  # Rendered only with replicas > 1.
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Placement across failure domains. One replica per NODE is always on
+  # (kubernetes.io/hostname, maxSkew 1, DoNotSchedule). `zone` adds one per
+  # availability ZONE (v7.5.3), off by default: the zones are an estate fact.
+  #
+  # With `replicas` = the number of zones, maxSkew 1 puts exactly one in
+  # each. DoNotSchedule (default) keeps the spread under node loss: the
+  # replacement must go back to the zone that lost one, and while that zone
+  # has no capacity the pod waits and the other replicas serve; the PDB
+  # keeps a drain from taking more. ScheduleAnyway lets the scheduler pile
+  # replicas into one zone, which is the failure this exists to prevent.
+  #
+  # minDomains (DoNotSchedule only; 0 renders nothing): the least number of
+  # zones that must hold a replica. It matters when `nodeClass` selects
+  # nodes that exist in fewer zones than there are replicas: the scheduler
+  # counts only zones with a matching node, so without it every replica
+  # fits in the one zone that has one and nothing ever asks the autoscaler
+  # for a node in another. With it, the extra replica stays Pending until
+  # a node appears in a new zone, which Karpenter provisions.
+  topologySpread:
+    zone:
+      enabled: false
+      maxSkew: 1
+      whenUnsatisfiable: DoNotSchedule
+      minDomains: 0
+  # Service `spec.trafficDistribution` (Kubernetes 1.31+): PreferClose
+  # (alias of PreferSameZone), PreferSameZone or PreferSameNode. A client
+  # then reaches a replica in its own zone while one is ready there, so
+  # spreading the replicas across zones does not bring cross-zone traffic
+  # back. Empty: not rendered (every endpoint, as before).
+  trafficDistribution: ""
+  s3:
+    # Required while enabled. `region` "auto" for Cloudflare R2.
+    bucket: ""
+    region: ""
+    # S3-COMPATIBLE STORES: the endpoint URL, and whether to address the
+    # bucket as endpoint/bucket/key (pathStyle) -- the same two switches as
+    # the `s3` block of the earlier module proxy. Empty endpoint: AWS.
+    endpoint: ""
+    pathStyle: false
+    # Static credentials for a store with no pod identity, as
+    # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (and optionally
+    # AWS_SESSION_TOKEN) in an existing Secret. Empty: the pod's own
+    # identity (EKS Pod Identity or IRSA on the ServiceAccount below).
+    existingSecret: ""
+  # How long a redirect's presigned URL stays valid. Minutes, not hours: a
+  # URL is a bearer credential for one object, and a client follows it at
+  # once.
+  presignTTL: 5m
+  nix:
+    enabled: true
+    # Store key prefix. With deploy/pulumi/runneridentity's CacheRedirect
+    # role (ONE prefix), put both prefixes under that one, e.g.
+    # `cache-redirect/nix/` and `cache-redirect/goproxy/`.
+    prefix: nix/
+    upstream: https://cache.nixos.org
+    # /nix-cache-info Priority. LOWER wins, and cache.nixos.org says 40, so
+    # Nix prefers this cache whatever the order of `substituters`.
+    priority: 30
+  goproxy:
+    enabled: true
+    prefix: goproxy/
+    upstream: https://proxy.golang.org
+    # The checksum database proxied under /goproxy/sumdb/<name>/: tiles are
+    # stored like any immutable object, lookups and the latest tree head
+    # are passed through. Set `name: ""` to answer `supported` with 404 and
+    # send the go command to the database directly.
+    sumdb:
+      name: sum.golang.org
+      upstream: https://sum.golang.org
+  # The Maven repositories (v7.7.0): what a Gradle or Maven build declares as
+  # mavenCentral(), google() and gradlePluginPortal(), pulled through like the
+  # others -- an immutable file is stored under `prefix`, an archive is a
+  # redirect on a hit, a version list or a snapshot is passed through and not
+  # stored. One path per upstream, so the client keeps the order it declared:
+  #   <base>/maven/central/...        repo.maven.apache.org/maven2
+  #   <base>/maven/google/...         dl.google.com/dl/android/maven2
+  #   <base>/maven/gradle-plugins/... repo.maven.apache.org/maven2, then plugins.gradle.org/m2
+  # (The Plugin Portal re-serves all of Maven Central to a plugin and answers a
+  # burst with 429, so its repository asks Central first and the Portal only
+  # for what Central lacks: the plugin markers.) An upstream that answers 429,
+  # 502, 503 or 504 is asked again, up to four times, before the client sees a
+  # 502. Read-only for clients, so it is safe on any tier. On (it needs
+  # nothing the other front-ends do not).
+  maven:
+    enabled: true
+    prefix: maven/
+    # name: URL, or URL|URL for a chain asked in order while the answer is a
+    # 404. Naming any repository REPLACES the three above; leave it empty for
+    # them. A name is letters, digits, '.', '_' and '-'.
+    repositories: {}
+  # The Gradle remote build cache (v7.7.0), HTTP protocol: a GET of
+  # <base>/gradle/cache/<key> is a redirect to the entry in the bucket (404 on
+  # a miss), a PUT stores it. UNLIKE every other front-end it is WRITABLE by
+  # whoever can reach the service, so it is OFF by default; both presets
+  # (presets/preview.yaml, presets/stable.yaml) turn it on, each tier in its
+  # own deployment and bucket. A write is bounded
+  # (hex keys only, a Content-Length, `maxEntryBytes`, committed only when the
+  # body arrived whole, the first write of a key wins) but not authenticated.
+  # A stable runner never reads what a preview job wrote because the tiers do
+  # not share a deployment or a bucket.
+  gradle:
+    enabled: false
+    prefix: gradle/
+    # The largest entry a client may store; a larger PUT is a 413, which Gradle
+    # reads as "too large to cache" and carries on.
+    maxEntryBytes: 536870912
+  # The npm registry (v7.8.0), read-only: what npm, yarn (berry) and pnpm are
+  # given as their registry. An immutable tarball is stored under `prefix` and is
+  # a redirect to the bucket on a hit. A packument (the metadata of a package) is
+  # kept for `freshTTL`, then revalidated with the ETag upstream gave; it is
+  # served from the copy in the bucket when the registry fails, so an outage of
+  # registry.npmjs.org does not break the installs of what has been installed
+  # before (a package never seen is a 502). Two variants by Accept: the
+  # abbreviated install document and the full one (which `time`, pnpm's
+  # minimumReleaseAge and yarn's age gate need). The tarball URLs of a packument
+  # are rewritten to the address the client reached the service by, because yarn
+  # and pnpm fetch the URL the document names. `npm audit`, `yarn npm audit`,
+  # `pnpm audit` and search are passed through; publish, unpublish, login and
+  # every other write are refused (405), so it is safe on any tier. An upstream
+  # that answers 429, 502, 503 or 504 is asked again, up to four times.
+  # OFF by default; both presets turn it on.
+  npm:
+    enabled: false
+    prefix: npm/
+    registry: https://registry.npmjs.org
+    # How long a packument is served without asking the registry again.
+    freshTTL: 2m
+  # A HOST NAME for a front-end (v7.7.0): a request whose Host header is the
+  # name is served at the ROOT of that front-end, so a gateway routes by name
+  # to the Service and rewrites nothing. A client is then given a base URL
+  # with no path:
+  #   nix:    substituters = https://<hosts.nix>               (/nix-cache-info,
+  #                                                              /<hash>.narinfo, /nar/...)
+  #   maven:  url = https://<hosts.maven>/central              (also /google, /gradle-plugins;
+  #                                                              the probe is GET /)
+  #   gradle: url = https://<hosts.gradle>/                    (/<key>; the probe is GET /)
+  #   npm:    registry = https://<hosts.npm>/                  (/<package>, /<package>/-/<file>.tgz,
+  #                                                              /-/ping)
+  # A port on the Host header is ignored, and so is case. On the Nix host a path
+  # already starting with /nix/ is served as it is (a gateway that still
+  # rewrites the root onto /nix keeps working until it is changed). A request for any
+  # other Host keeps the path layout above (/nix, /goproxy, /maven/<repo>,
+  # /gradle/cache/, /npm), so the Go module proxy's name and the in-cluster Service
+  # work unchanged. The Go proxy has no host of its own: it stays under
+  # /goproxy. Empty: not set. Naming a host of a front-end that is disabled
+  # is a render error. Hosts must differ.
+  hosts:
+    nix: ""
+    maven: ""
+    gradle: ""
+    npm: ""
+  # Extra flags, passed as given (see `cache-redirect -help`), e.g.
+  # ["-negative-ttl=5m"].
+  extraArgs: []
+  serviceAccount:
+    create: true
+    name: cache-redirect
+    annotations: {}
+  podAnnotations: {}
+  # Small: the bytes of a hit never pass through the pod. A miss holds up
+  # to (s3-upload-concurrency + 1) 8 MiB parts in memory per upstream
+  # fetch, 16 fetches at most by default.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+  networkPolicy:
+    # Only listed namespaces may reach the service. REQUIRED while it and
+    # the policy are on (see buildkitd.networkPolicy). additionalIngress
+    # adds a policy per entry on the same port, e.g. for a metrics agent
+    # in another namespace (`monitoring` below).
+    enabled: true
+    consumerNamespaces: []
+    additionalIngress: []
+  # A PodMonitor (monitoring.coreos.com/v1; the CRD must exist) on the
+  # `http` port's /metrics. Off by default.
+  monitoring:
+    enabled: false
+    interval: ""
+    labels: {}
+
+bazelRemote:
+  # moon's remote task cache speaks the Bazel Remote Execution v2 API.
+  # Disk-backed by default: zero IAM, cluster-local latency. `s3.enabled`
+  # switches on bazel-remote's S3 PROXY backend (upstream v2.6.2), which
+  # sits in FRONT of the same local `--dir` disk rather than replacing
+  # it -- the PVC below stays the working set, and `size`/`maxSizeGb`
+  # keep governing it either way. It is a CACHE either way: losing the
+  # PVC costs one cold rebuild, and losing the bucket costs the same for
+  # whatever the disk hasn't re-warmed yet.
+  enabled: true
+  size: 10Gi
+  # --max_size in GiB; keep under `size`.
+  maxSizeGb: 8
+  image:
+    registry: docker.io
+    repository: buchgr/bazel-remote-cache
+    # renovate: datasource=docker depName=buchgr/bazel-remote-cache
+    tag: v2.6.2
+  # Bound to an EKS Pod Identity association (this namespace + this
+  # ServiceAccount name) when `s3.enabled`. Empty renders no
+  # serviceAccountName, so the pod keeps using the namespace's default
+  # ServiceAccount -- unchanged behaviour until an estate sets this.
+  serviceAccountName: ""
+  serviceAccount:
+    # Render the ServiceAccount named by `serviceAccountName` (which must
+    # then be set). Off by default: an estate that already creates it
+    # elsewhere keeps doing so. A Pod Identity association is made against
+    # a ServiceAccount that EXISTS -- the pod is not admitted without it --
+    # so an estate that mints the association for this component usually
+    # wants the chart to own the object too, as `cacheRedirect.serviceAccount`
+    # does. `annotations` is for an identity mechanism that needs one
+    # (IRSA); Pod Identity needs none.
+    create: false
+    annotations: {}
+  s3:
+    # Off by default. Enabling needs the bucket, its region, and a
+    # matching Pod Identity association (namespace +
+    # `bazelRemote.serviceAccountName`) to exist first -- see the
+    # comment on `serviceAccountName` above for what a mismatch there
+    # looks like.
+    #
+    # AWS ONLY, deliberately. There is no `endpoint` key here, so this
+    # cannot address R2, MinIO or any other S3-compatible store. Those
+    # authenticate with an access key, and the only way to give this
+    # container one is to put key material in a values file or mount it
+    # for a flag -- which is exactly what `auth_method=iam_role` exists
+    # to avoid. Offering an `endpoint` without an auth method that works
+    # there would be a trap: the pod would start, answer every request,
+    # find no AWS credentials, and cache nothing, with nothing looking
+    # broken. If a non-AWS store is ever needed here, it is a decision
+    # about credential handling, not a value someone can set.
+    enabled: false
+    bucket: ""
+    region: ""
+    prefix: ""        # key prefix within the bucket
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+npmCache:
+  # verdaccio: a read-through npm registry proxy. NOT the
+  # nginx pattern — npm tarballs are immutable but metadata documents
+  # mutate on publish, and tarball URLs are embedded inside metadata,
+  # so a dumb proxy caches stale metadata or nothing useful. verdaccio
+  # short-TTLs metadata and caches tarballs forever on a disposable
+  # PVC. PUBLIC packages only, publish denied, registration off — zero
+  # secrets in the cache path. Runners point npmRegistryServer here
+  # with a health-probe fallback to upstream: pod down = slower, never
+  # broken.
+  enabled: true
+  image:
+    registry: docker.io
+    repository: verdaccio/verdaccio
+    # renovate: datasource=docker depName=verdaccio/verdaccio
+    tag: "6.10.4"
+  size: 20Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  networkPolicy:
+    # Only listed namespaces may consume the cache. REQUIRED while the
+    # cache and the policy are on (see buildkitd.networkPolicy).
+    enabled: true
+    consumerNamespaces: []
+
