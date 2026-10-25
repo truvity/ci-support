@@ -248,10 +248,5 @@
     "inputs": {},
     "name": "buildkit-arm64",
     "type": "truvity:asg:Front"
-  },
-  {
-    "inputs": {},
-    "name": "buildkit-arm64",
-    "type": "truvity:ci-support:BuildKitBuilder"
   }
 ]

@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## v0.1.1
+
+- **`pkg/buildkit/ec2` registers no component of its own.** `ec2.New` returns a plain holder, and the box (`truvity:asg:Box`) and its listener (`truvity:asg:Front`) are registered with the caller's options. In v0.1.0 the wrapper passed itself as the parent to truvity/asg, whose own children then took the wrapper as their parent too (a caller's `Parent` overrides the library's), so the URNs would have moved the day that changes. Nothing was deployed with v0.1.0.
+
 ## v0.1.0
 
 - **New Go packages `pkg/buildkit` and `pkg/buildkit/ec2` (module `github.com/truvity/ci-support`): the BuildKit builders on machines of their own.**

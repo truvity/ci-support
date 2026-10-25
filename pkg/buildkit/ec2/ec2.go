@@ -48,9 +48,6 @@ import (
 	"github.com/truvity/ci-support/pkg/buildkit"
 )
 
-// TypeToken is the component's Pulumi type.
-const TypeToken = "truvity:ci-support:BuildKitBuilder"
-
 // Defaults.
 const (
 	DefaultRootVolumeGiB  = 20
@@ -150,10 +147,11 @@ type (
 		KeyAlias string
 	}
 
-	// Builder is what New creates.
+	// Builder is what New creates. It is a plain holder, not a component of
+	// its own: the box (truvity:asg:Box) and its front (truvity:asg:Front)
+	// are registered with the caller's options, each the parent of its own
+	// resources.
 	Builder struct {
-		pulumi.ResourceState
-
 		// Box is the Auto Scaling group and its parts.
 		Box *asg.Appliance
 		// Front is the box's listener, target group and rules on the NLB.
@@ -279,11 +277,6 @@ func New(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.ResourceOp
 	}
 
 	b := &Builder{Rendered: rendered}
-	if err := ctx.RegisterComponentResource(TypeToken, name, b, opts...); err != nil {
-		return nil, err
-	}
-
-	child := append([]pulumi.ResourceOption{pulumi.Parent(b)}, opts...)
 
 	f, err := front.Attach(ctx, name, a.NLB, []front.Listener{{
 		Name:                       a.Listener,
@@ -292,7 +285,7 @@ func New(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.ResourceOp
 		IdleTimeoutSeconds:         DefaultIdleTimeoutSeconds,
 		DeregistrationDelaySeconds: DefaultDeregistrationDelaySeconds,
 		Sources:                    a.Sources,
-	}}, child...)
+	}}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("buildkit ec2: New(%q, ...): %w", name, err)
 	}
@@ -332,18 +325,12 @@ func New(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.ResourceOp
 			Ingress:     f.TargetIngress(),
 		},
 		Contribution: mods,
-	}, child...)
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("buildkit ec2: New(%q, ...): %w", name, err)
 	}
 
 	b.Box = box
-
-	if err := ctx.RegisterResourceOutputs(b, pulumi.Map{
-		"group": box.Group.Name, "role": box.Role.Arn, "dnsName": f.DNSName,
-	}); err != nil {
-		return nil, err
-	}
 
 	return b, nil
 }
