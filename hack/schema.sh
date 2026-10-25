@@ -15,7 +15,7 @@
 # location, github.com/yannh/kubernetes-json-schema).
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 
 version=${K8S_VERSION:-1.36.0}
 goldens=(tests/golden/*/*.yaml)

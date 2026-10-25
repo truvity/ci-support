@@ -21,7 +21,7 @@
 # helper that broke -- has proved nothing about the rule it names.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 
 mode=${1:-check}
 case "$mode" in check|update) ;; *) echo "usage: $0 [check|update]" >&2; exit 2 ;; esac

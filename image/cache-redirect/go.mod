@@ -1,4 +1,4 @@
-module github.com/truvity/ci-plane/cache-redirect
+module github.com/truvity/ci-support/image/cache-redirect
 
 go 1.27.2
 

@@ -555,7 +555,7 @@ func (c *Cache) fetchChain(ctx context.Context, method, frontend, upstream strin
 // retry-after of tens of minutes) once a few hundred artifacts have been asked
 // for in a burst, which is what a build that resolves its dependencies does;
 // the same requests with a name that says who is asking are served.
-const userAgent = "cache-redirect (+https://github.com/truvity/ci-plane)"
+const userAgent = "cache-redirect (+https://github.com/truvity/ci-support)"
 
 // maxAttempts is how many times a retried front-end asks an upstream.
 const maxAttempts = 4

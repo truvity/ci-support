@@ -37,6 +37,31 @@ patterns=(
   '\bINF-[0-9]+\b'                       # an internal ticket key
 )
 
+# What a hit may look like and still be mechanism, one regex per pattern
+# above (same order; empty allows nothing), as ci-plane's copy has it since
+# the ci-builders chart arrived from there. Matched against the whole
+# `file:line:text` hit, so an allowance can name its file.
+allows=(
+  '123456789012'                       # the documented placeholder account
+  ''
+  '123456789012\.dkr\.ecr\.'           # the documented placeholder registry
+  # A templated or placeholder namespace is how the chart NAMES a Service,
+  # not which one; kube-dns in kube-system is Kubernetes' own, not an
+  # estate's.
+  '(%s|example|<namespace>|<ns>)\.svc\.cluster\.local|kube-dns\.kube-system\.svc\.cluster\.local'
+  ''
+  ''
+  ''
+  ''
+  ''
+  ''
+)
+
+if [ "${#patterns[@]}" -ne "${#allows[@]}" ]; then
+  echo "leak-canary.sh: ${#patterns[@]} patterns but ${#allows[@]} allowances" >&2
+  exit 2
+fi
+
 fail=0
 
 # Scan TRACKED FILES ONLY. The point of this canary is to stop particulars
@@ -52,12 +77,18 @@ fail=0
 # particulars from a public repo.
 mapfile -d '' tracked < <(git ls-files -z)
 
-for p in "${patterns[@]}"; do
+for i in "${!patterns[@]}"; do
+  p=${patterns[$i]}
+  allow=${allows[$i]}
   # Exclude this script (it necessarily contains the patterns it bans) and
   # the lock file (public dependency data by definition).
-  if hits=$(printf '%s\0' "${tracked[@]}" \
-              | grep -zZv -e '^hack/leak-canary\.sh$' -e '^devbox\.lock$' \
-              | xargs -0 -r grep -InP "$p" 2>/dev/null); then
+  hits=$(printf '%s\0' "${tracked[@]}" \
+           | grep -zZv -e '^hack/leak-canary\.sh$' -e '^devbox\.lock$' \
+           | xargs -0 -r grep -InP "$p" 2>/dev/null)
+  if [ -n "$allow" ] && [ -n "$hits" ]; then
+    hits=$(grep -vE "$allow" <<< "$hits")
+  fi
+  if [ -n "$hits" ]; then
     echo "LEAK: pattern /$p/ matched — particulars belong in caller inputs or org variables:"
     echo "$hits" | head -5 | sed 's/^/    /'
     fail=1

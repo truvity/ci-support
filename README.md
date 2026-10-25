@@ -2,17 +2,19 @@
 
 The CI services every GitHub Actions runner uses (caches, docker and nix builders), independent of how the runner is hosted.
 
-| Part | Status | What it is |
+| Part | Where | What it is |
 |---|---|---|
-| Build caches | arrives from ci-plane | bazel-remote, the npm read-through cache, cache-redirect |
-| Docker builders | arrives from ci-plane | buildkitd |
-| Nix workers | arrives from ci-plane | the nix worker service and its images |
-| `ci-builders` chart | arrives from ci-plane | the Helm chart that deploys the services above |
+| `ci-builders` chart | `charts/ci-builders` | the Helm chart that deploys the services below |
+| cache-redirect | `image/cache-redirect` | a pull-through cache for Go modules, Nix, Maven, Gradle and npm that answers a hit with a redirect to a presigned URL of its bucket |
+| Docker builders | the chart's `buildkitd` | rootless BuildKit per architecture, optionally behind mutual TLS |
+| Other caches | the chart's `bazelRemote`, `npmCache` | bazel-remote and the npm read-through cache |
+| Nix workers | the chart's `nixWorkers` | persistent remote Nix builders; their image is still published by [truvity/ci-plane](https://github.com/truvity/ci-plane) |
 
-Nothing is published from this repository yet. The content arrives from
-[truvity/ci-plane](https://github.com/truvity/ci-plane) in a later migration;
-until then the repository holds only its scaffolding: the licence, the
-toolchain, the gate and the CI workflow.
+The chart and cache-redirect moved here from
+[truvity/ci-plane](https://github.com/truvity/ci-plane). One `v*` tag
+publishes the image at `ghcr.io/truvity/ci-support/cache-redirect` and the
+chart at `oci://ghcr.io/truvity/ci-support/charts/ci-builders`, with every
+image digest stamped into the chart defaults.
 
 ## Who it is for
 
@@ -44,27 +46,35 @@ the reason for the split from the runner images.
 
 ## Install and a worked example
 
-Nothing is published yet, so there is nothing to install. Each service will
-be installed by the `ci-builders` chart from the registry, with an explicit
-`--version`, and a values file that names the consumer's own cluster facts;
-the first release adds the worked example here.
+Install the chart from the registry with an explicit `--version` and a
+values file that names your own cluster facts. The chart refuses to render
+without the ones it requires (for example the namespaces allowed to reach
+each builder):
+
+```bash
+helm install ci-builders oci://ghcr.io/truvity/ci-support/charts/ci-builders \
+  --version <X.Y.Z> -n <namespace> \
+  --set buildkitd.networkPolicy.consumerNamespaces={<runner namespace>} \
+  --set npmCache.networkPolicy.consumerNamespaces={<runner namespace>}
+```
+
+[docs/day-1-install.md](docs/day-1-install.md) walks through a fresh
+install, [docs/mtls.md](docs/mtls.md) the builders behind mutual TLS.
 
 ## Consumers
 
-Who uses this, and through which surface. As of 2026-10-21 the services are
-still released from truvity/ci-plane, and the consumers are:
+Who uses this, and through which surface (2026-10-25):
 
 | Consumer | Through |
 |---|---|
-| GitHub Actions runners on Kubernetes (ARC), see truvity/ci-plane | the `ci-builders` chart |
 | GitHub Actions runners on serverless containers, see [truvity/grun](https://github.com/truvity/grun) | the cache and builder endpoints |
 | A second, non-AWS estate | the `ci-builders` chart |
 
 ## Neighbours
 
 - **[truvity/ci-plane](https://github.com/truvity/ci-plane)**: where this
-  content lives today, and the home of the ARC runner scale-set chart, which
-  stays there.
+  content came from. It still publishes the runner and nix-worker images
+  the chart names, and the archived ARC runner scale-set chart.
 - **[truvity/grun](https://github.com/truvity/grun)**: runners on serverless
   containers; a client of the services here.
 - **[truvity/ci-workflows](https://github.com/truvity/ci-workflows)** and
@@ -75,8 +85,13 @@ still released from truvity/ci-plane, and the consumers are:
 
 ## Documentation
 
-`docs/` arrives with the content. Until then the rules for working in this
-repository are in [CONTRIBUTING.md](CONTRIBUTING.md), the reporting policy in
+- [docs/architecture.md](docs/architecture.md): the load-bearing decisions.
+- [docs/day-1-install.md](docs/day-1-install.md): installing on a fresh estate.
+- [docs/day-2-operations.md](docs/day-2-operations.md): releasing and operating.
+- [docs/mtls.md](docs/mtls.md): the builders behind mutual TLS.
+
+The rules for working in this repository are in
+[CONTRIBUTING.md](CONTRIBUTING.md), the reporting policy in
 [SECURITY.md](SECURITY.md) and the change history in
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -90,8 +105,9 @@ a particular slips in.
 
 ## Status
 
-True on 2026-10-21: the repository exists with its scaffolding and a gate that
-passes (`just check`); it holds no chart, image or tool, and has no release.
+True on 2026-10-25: the `ci-builders` chart and cache-redirect have moved
+here from ci-plane and pass the gate (`just check`); no release has been cut
+from this repository yet.
 
 ## Development
 
@@ -105,8 +121,10 @@ recipes.
 
 ## Releasing
 
-No release has been cut. The first release is a hand-cut tag; it also turns
-the CI `policy-conformance` job from a report into a gate. Auto-release is
+A `v*` tag is the release act (`.github/workflows/release.yaml`); see
+[docs/day-2-operations.md](docs/day-2-operations.md). No release has been cut
+yet. The first release is a hand-cut tag; it also turns the CI
+`policy-conformance` job from a report into a gate. Auto-release is
 armed per repository, deliberately, and only for patches: every minor and
 major stays a hand-cut tag.
 

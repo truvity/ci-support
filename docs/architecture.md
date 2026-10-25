@@ -1,8 +1,15 @@
 # Architecture
 
-The CI plane is released as **one versioned unit**: the runner,
-nix-worker and cache-redirect images and the `ci-builders` Helm chart.
-This document records the load-bearing decisions and why each one holds.
+This repository releases the cache-redirect image and the `ci-builders`
+Helm chart as **one versioned unit**. The chart also names two images it
+does not build: the Nix workers' image and the runner image, both still
+published by [truvity/ci-plane](https://github.com/truvity/ci-plane). A
+release here stamps those two by digest from one pinned ci-plane release
+(`CI_PLANE_IMAGES` in `.github/workflows/release.yaml`), so a consumer is
+still transitively digest-pinned to every image the chart can run. This
+document records the load-bearing decisions and why each one holds; it
+moved here from ci-plane with the chart, and ci-plane's history keeps the
+earlier versions.
 
 The `arc-runners` chart, which rendered the Actions Runner Controller
 scale sets, is archived; its last release is 7.8.3. The decisions that
@@ -23,7 +30,12 @@ A `v*` tag releases everything. The release workflow:
    defaults **by key** (`hack/stamp-digests.sh`), so the runner's digest
    can never land in `nixWorkerImage`;
 3. stamps the chart's `version` and `appVersion` from the tag — the
-   committed `0.0.0` is a placeholder — and publishes it.
+   committed `0.0.0` is a placeholder — and publishes it to
+   `oci://ghcr.io/truvity/ci-support/charts/ci-builders`.
+
+Only cache-redirect is built here; the steps above apply to it alone, and
+`nixWorkerImage` and `runnerImage` are stamped with the digests of the
+ci-plane release the workflow pins.
 
 A consumer therefore pins **one chart version** and is transitively
 digest-pinned to both images. Every release builds the images: native
@@ -155,7 +167,7 @@ image's `/usr/local/bin/runner-extra-ca` in front of the container's
 command (in front of `runner-watchdog` too, which stays PID 1 because the
 script `exec`s the rest of the command line).
 
-At container start `runner-extra-ca` (image/runner-extra-ca.sh) reads every
+At container start `runner-extra-ca` (ci-plane's image/runner-extra-ca.sh) reads every
 `*.pem` and `*.crt` file in `CI_EXTRA_CA_DIR` that holds a PEM certificate.
 Unset, it does nothing. The runner container is the `runner` user and, on a
 `restricted` set, may not be root, so `update-ca-certificates` (which writes
@@ -194,7 +206,7 @@ source reaches a pod only when it starts (runners are ephemeral, so the next
 runner has it). The values-hash includes the setting, so changing the
 source's name recycles the listeners.
 
-`hack/extra-ca-cases.sh` runs the script as a non-root user (the system
+ci-plane's `hack/extra-ca-cases.sh` runs the script as a non-root user (the system
 roots and the extras both verify against the bundle, a ConfigMap-shaped
 directory works, bad input is reported and survived), and the CI image job
 runs it in the built image. On ECS Fargate runners the image builder adds
@@ -238,7 +250,7 @@ sustained), which a CI burst saturates: each job then crawls, however
 warm the cache is. Yet almost every byte such a cache serves is an
 immutable, content-addressed file: a NAR, a module zip.
 
-`cache-redirect` (image `ghcr.io/truvity/ci-plane/cache-redirect`, chart
+`cache-redirect` (image `ghcr.io/truvity/ci-support/cache-redirect`, chart
 `cacheRedirect`, off by default) keeps the cache's index in an S3 (or
 S3-compatible) bucket and answers a hit on a **large** immutable object
 with an **HTTP 302 to a presigned GET URL** of that object, valid for
@@ -444,7 +456,7 @@ Two things this front-end meets that the others did not:
 - **A User-Agent that names the sender.** Maven Central's CDN answers Go's
   default User-Agent with 429 and a `retry-after` of tens of minutes once a
   burst of a few hundred artifacts has been asked for; the same requests
-  with `cache-redirect (+https://github.com/truvity/ci-plane)` are served.
+  with `cache-redirect (+https://github.com/truvity/ci-support)` are served.
   Every upstream request carries it.
 - **Retries.** An upstream that answers 429, 502, 503 or 504 is asked again
   (up to 4 attempts, `-retry-backoff` times the attempt, or its

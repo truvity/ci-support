@@ -12,7 +12,7 @@
 #
 # THIS SCRIPT IS INTERIM. The estate's public repositories package charts
 # with helmctl from goreleaser's dist/artifacts.json, which needs no
-# stamping at all. ci-plane cannot use that yet: helmctl reads and
+# stamping at all. This repository cannot use that yet: helmctl reads and
 # validates a single `images:` map, and these charts carry top-level
 # `runnerImage:` / `nixWorkerImage:`. Adopting that convention is a
 # breaking values change with consumers to move, so it is its own piece

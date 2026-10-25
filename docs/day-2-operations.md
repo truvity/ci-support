@@ -1,4 +1,4 @@
-# Day 2 — operating the CI plane
+# Day 2 — operating the builders and caches
 
 ## Releasing
 
@@ -11,18 +11,20 @@ already moved the pins on master).
 git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
 ```
 
-The Release workflow does the rest: every image built natively per
-architecture and merged into manifest lists, each digest stamped into
-the chart defaults by key, the chart stamped with the tag's version
-and published (`ci-builders`; `arc-runners` is archived and was last
-published at 7.8.3). Semver intent: patch = refresh/mechanics, minor = chart
+The Release workflow does the rest: the cache-redirect image built
+natively per architecture and merged into a manifest list, its digest
+and the pinned ci-plane release's nix-worker and runner digests stamped
+into the chart defaults by key, the chart stamped with the tag's version
+and published to `oci://ghcr.io/truvity/ci-support/charts/ci-builders`. Semver intent: patch = refresh/mechanics, minor = chart
 features or new tools in the image, major = breaking values. Add the
 version's `## vX.Y.Z` heading to [CHANGELOG.md](../CHANGELOG.md) before
 tagging.
 
-## The automatic chain (optional, two switches)
+## The automatic chain (optional, not armed here yet)
 
-With renovate automerging pin bumps on master, the weekly
+This repository has no `auto-release` workflow yet: every release is a
+hand-cut tag. The chain below is how ci-plane ran it, and what arming it
+here takes. With renovate automerging pin bumps on master, a weekly
 `auto-release` workflow can cut the patch tag itself. It is doubly
 guarded and dark by default; enabling it takes:
 
@@ -57,7 +59,7 @@ The producer releases and stops. In the consuming estate's repository:
 
 1. Annotate the pin —
    ```yaml
-   # renovate: datasource=docker depName=ghcr.io/truvity/charts/ci-builders
+   # renovate: datasource=docker depName=ghcr.io/truvity/ci-support/charts/ci-builders
    ciPlane: "X.Y.Z"
    ```
    The chart's version is the plane's version: one tag releases the
@@ -195,7 +197,7 @@ a missing feature.
 A rejected sign-in that never reaches opkssh at all logs `User <name>
 from <ip> not allowed because not listed in AllowUsers` instead — that
 means the architecture is not in `opkssh.archs`, not a policy refusal.
-`hack/nix-worker-principals-e2e.sh` proves both shapes against the real
+ci-plane's `hack/nix-worker-principals-e2e.sh` proves both shapes against the real
 image without a live OIDC provider (a plain, non-certificate key
 reaches `opkssh verify` and is refused BY opkssh; with the feature off,
 the same key never gets that far).
