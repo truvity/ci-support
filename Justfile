@@ -7,7 +7,7 @@
 # overview.
 
 charts := "ci-builders"
-modules := "image/cache-redirect"
+modules := "image/cache-redirect ."
 
 default:
     @just --list

@@ -1,0 +1,26 @@
+# Rendered by github.com/truvity/ci-support/pkg/buildkit. No secret.
+root = "/var/lib/buildkit"
+
+[grpc]
+  # TLS applies to every tcp:// listener; the unix socket stays plain and is
+  # reachable by root only (the watchdog and the ready check).
+  address = ["tcp://0.0.0.0:1234", "unix:///run/buildkit/buildkitd.sock"]
+  debugAddress = "127.0.0.1:6060"
+
+  [grpc.tls]
+    cert = "/run/tls/cert.pem"
+    key = "/run/tls/key.pem"
+    ca = "/run/tls/ca.pem"
+
+[worker.oci]
+  enabled = true
+  rootless = true
+  snapshotter = "overlayfs"
+  max-parallelism = 6
+  gc = true
+  reservedSpace = "10GB"
+  maxUsedSpace = "80GB"
+  minFreeSpace = "10GB"
+
+[worker.containerd]
+  enabled = false

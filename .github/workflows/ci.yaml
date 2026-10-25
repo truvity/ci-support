@@ -342,20 +342,22 @@ jobs:
           cp /tmp/ci-builders.bak charts/ci-builders/values.yaml
           git diff --exit-code -- charts/ || { echo "::error::the dry run left the charts modified"; exit 1; }
 
-  # cache-redirect is its own image (ci-builders `cacheRedirect`).
+  # Every Go module: cache-redirect (its own image, ci-builders
+  # `cacheRedirect`) and the root module (pkg/buildkit, the builders on
+  # their own machines).
   go:
     strategy:
       fail-fast: false
       matrix:
-        module: [cache-redirect]
+        module: [image/cache-redirect, .]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: image/${{ matrix.module }}/go.mod
-          cache-dependency-path: image/${{ matrix.module }}/go.sum
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
       # One .golangci.yaml at the repo root covers every module under
       # image/: golangci-lint runs once per module, in this matrix, and
       # each run points `--config` back at the single shared file.
@@ -363,10 +365,10 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0
-          working-directory: image/${{ matrix.module }}
-          args: --config=../../.golangci.yaml
+          working-directory: ${{ matrix.module }}
+          args: --config=${{ github.workspace }}/.golangci.yaml
       - name: Vet and test
-        working-directory: image/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: |
           set -euo pipefail
           test -z "$(gofmt -l .)"
@@ -417,10 +419,9 @@ jobs:
     with:
       recipes: '["lint", "golden", "schema", "leak-canary"]'
       policy-conformance: true
-      # Report-only until the first release: C5 wants at least one
-      # `## vX.Y.Z` CHANGELOG heading and this repository has cut no tag.
-      # Turn strict on with the first release (the README's Releasing).
-      policy-conformance-strict: false
+      # A gate since the first release (v0.1.0, whose `## vX.Y.Z` CHANGELOG
+      # heading C5 wants).
+      policy-conformance-strict: true
 
   # Stable name for branch protection: the matrix reports as
   # "recipes / lint" and so on, so a required context called "check"

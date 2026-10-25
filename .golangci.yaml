@@ -1,6 +1,7 @@
 version: "2"
 
-# One configuration for every Go module (image/cache-redirect today).
+# One configuration for every Go module (image/cache-redirect and the root
+# module, pkg/buildkit).
 # There is no go.work, so golangci-lint v2 is invoked once per module (it resolves
 # packages through the nearest go.mod, and modules with no workspace cannot be
 # linted in a single invocation). A config per module directory would duplicate this

@@ -1,0 +1,69 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadParameters",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/cert",
+        "arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/key",
+        "arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/client-ca"
+      ]
+    },
+    {
+      "Sid": "OwnGroup",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:CompleteLifecycleAction",
+        "autoscaling:EnterStandby",
+        "autoscaling:ExitStandby",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:SetInstanceHealth",
+        "autoscaling:TerminateInstanceInAutoScalingGroup"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:autoscaling:eu-west-1:@ACCOUNT@:autoScalingGroup:*:autoScalingGroupName/devel-buildkit-arm64"
+      ]
+    },
+    {
+      "Sid": "SSMCertReadGroup",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:DescribeAutoScalingGroups"
+      ],
+      "Resource": [
+        "*"
+      ]
+    },
+    {
+      "Sid": "DecryptTheCertificate",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "kms:ResourceAliases": [
+            "alias/test-ci-buildkit-server"
+          ]
+        },
+        "StringEquals": {
+          "kms:EncryptionContext:PARAMETER_ARN": [
+            "arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/cert",
+            "arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/key",
+            "arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/client-ca"
+          ],
+          "kms:ViaService": [
+            "ssm.eu-west-1.amazonaws.com"
+          ]
+        }
+      }
+    }
+  ]
+}

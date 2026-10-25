@@ -9,6 +9,7 @@ The CI services every GitHub Actions runner uses (caches, docker and nix builder
 | Docker builders | the chart's `buildkitd` | rootless BuildKit per architecture, optionally behind mutual TLS |
 | Other caches | the chart's `bazelRemote`, `npmCache` | bazel-remote and the npm read-through cache |
 | Nix workers | the chart's `nixWorkers` | persistent remote Nix builders; their image is still published by [truvity/ci-plane](https://github.com/truvity/ci-plane) |
+| Docker builders on their own machines | `pkg/buildkit`, `pkg/buildkit/ec2` | Go libraries: the BuildKit daemon rendered for a machine of its own (provider-neutral), and a Pulumi component that runs it on an EC2 Auto Scaling group behind a shared network load balancer, with [truvity/asg](https://github.com/truvity/asg) |
 
 The chart and cache-redirect moved here from
 [truvity/ci-plane](https://github.com/truvity/ci-plane). One `v*` tag
@@ -61,6 +62,28 @@ helm install ci-builders oci://ghcr.io/truvity/ci-support/charts/ci-builders \
 [docs/day-1-install.md](docs/day-1-install.md) walks through a fresh
 install, [docs/mtls.md](docs/mtls.md) the builders behind mutual TLS.
 
+The builders on EC2 are a Go library, pinned in the consumer's `go.mod`:
+
+```bash
+go get github.com/truvity/ci-support@v0.1.0
+```
+
+```go
+b, err := ec2.New(ctx, "buildkit-arm64", &ec2.Args{
+    Arch: "arm64", Name: "<env>-buildkit-arm64", InstanceType: "m7g.xlarge",
+    VPCID: vpc, SubnetIDs: private, PermissionsBoundary: boundaryARN,
+    NLB: sharedNLB, Port: 1235, // from the consumer's port registry
+    Sources: []front.Source{{SecurityGroupID: runnerSG}},
+    Certificate: ec2.Certificate{
+        Cert: "/<prefix>/arm64/cert", Key: "/<prefix>/arm64/key", ClientCA: "/<prefix>/client-ca",
+        KeyAlias: "alias/<key of those parameters>",
+    },
+    Daemon: buildkit.Config{MaxParallelism: 6},
+})
+```
+
+[docs/buildkit-on-ec2.md](docs/buildkit-on-ec2.md) describes the machine.
+
 ## Consumers
 
 Who uses this, and through which surface (2026-10-25):
@@ -69,6 +92,7 @@ Who uses this, and through which surface (2026-10-25):
 |---|---|
 | GitHub Actions runners on serverless containers, see [truvity/grun](https://github.com/truvity/grun) | the cache and builder endpoints |
 | A second, non-AWS estate | the `ci-builders` chart |
+| The builders on EC2, in the consumer's own deploy program | `pkg/buildkit/ec2` |
 
 ## Neighbours
 
@@ -89,6 +113,7 @@ Who uses this, and through which surface (2026-10-25):
 - [docs/day-1-install.md](docs/day-1-install.md): installing on a fresh estate.
 - [docs/day-2-operations.md](docs/day-2-operations.md): releasing and operating.
 - [docs/mtls.md](docs/mtls.md): the builders behind mutual TLS.
+- [docs/buildkit-on-ec2.md](docs/buildkit-on-ec2.md): a builder on a machine of its own.
 
 The rules for working in this repository are in
 [CONTRIBUTING.md](CONTRIBUTING.md), the reporting policy in
@@ -105,9 +130,11 @@ a particular slips in.
 
 ## Status
 
-True on 2026-10-25: the `ci-builders` chart and cache-redirect have moved
-here from ci-plane and pass the gate (`just check`); no release has been cut
-from this repository yet.
+True on 2026-10-26: v0.1.0 is the first release. The `ci-builders` chart and
+cache-redirect moved here from ci-plane with byte-identical goldens.
+`pkg/buildkit/ec2` is tested against Pulumi mocks and fake commands; no
+builder made by it has booted yet, so the first deploy is its first real
+test.
 
 ## Development
 
@@ -122,11 +149,9 @@ recipes.
 ## Releasing
 
 A `v*` tag is the release act (`.github/workflows/release.yaml`); see
-[docs/day-2-operations.md](docs/day-2-operations.md). No release has been cut
-yet. The first release is a hand-cut tag; it also turns the CI
-`policy-conformance` job from a report into a gate. Auto-release is
-armed per repository, deliberately, and only for patches: every minor and
-major stays a hand-cut tag.
+[docs/day-2-operations.md](docs/day-2-operations.md). The same tag versions
+the Go module. Releases are hand-cut tags; the CI `policy-conformance` job is
+a gate. Auto-release is not armed.
 
 ## Licence
 

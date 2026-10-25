@@ -1,0 +1,810 @@
+#cloud-config
+packages:
+  - git
+  - nftables
+  - shadow-utils
+  - xfsprogs
+write_files:
+  - path: /etc/asg/ssmcert-buildkit-ready.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # ssmcert ready check: buildkit
+      timeout 10 /usr/local/bin/buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers >/dev/null
+  - path: /etc/asg/ssmcert-buildkit.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/asg/modules/ssmcert. Parameter names only, no secret.
+      NAME='buildkit'
+      CERT_PARAM='/ci/test/buildkit-server/arm64/cert'
+      KEY_PARAM='/ci/test/buildkit-server/arm64/key'
+      CA_PARAM='/ci/test/buildkit-server/client-ca'
+      DIR='/run/asg-ssmcert/buildkit'
+      OWNER='buildkit:buildkit'
+      RESTART_UNITS=('buildkitd.service')
+      READY_TIMEOUT=600
+      WINDOW_START=2
+      WINDOW_END=5
+      DRAIN_PORT=1234
+      STANDBY=1
+      GROUP='devel-buildkit-arm64'
+      HOOK='devel-buildkit-arm64-launch'
+      DRAIN_SECONDS=1800
+      IDLE_SECONDS=300
+      REPLACEMENT_SECONDS=1200
+  - path: /etc/asg/watchdog.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/asg/modules/watchdog. No secret.
+      FAIL_SECONDS=180
+      RESTART_ATTEMPTS=2
+      RESTART_UNITS=('buildkitd.service')
+  - path: /etc/buildkit/buildkitd.toml
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/ci-support/pkg/buildkit. No secret.
+      root = "/var/lib/buildkit"
+
+      [grpc]
+        # TLS applies to every tcp:// listener; the unix socket stays plain and is
+        # reachable by root only (the watchdog and the ready check).
+        address = ["tcp://0.0.0.0:1234", "unix:///run/buildkit/buildkitd.sock"]
+        debugAddress = "127.0.0.1:6060"
+
+        [grpc.tls]
+          cert = "/run/asg-ssmcert/buildkit/cert.pem"
+          key = "/run/asg-ssmcert/buildkit/key.pem"
+          ca = "/run/asg-ssmcert/buildkit/ca.pem"
+
+      [worker.oci]
+        enabled = true
+        rootless = true
+        snapshotter = "overlayfs"
+        max-parallelism = 6
+        gc = true
+        reservedSpace = "10GB"
+        maxUsedSpace = "80GB"
+        minFreeSpace = "10GB"
+
+      [worker.containerd]
+        enabled = false
+  - path: /etc/buildkit/imds-guard.nft
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/ci-support/pkg/buildkit.
+      table inet buildkit_imds {
+        chain output {
+          type filter hook output priority filter; policy accept;
+          meta skuid 0 accept
+          ip daddr 169.254.169.254 counter drop
+          ip6 daddr fd00:ec2::254 counter drop
+        }
+      }
+  - path: /etc/sysctl.d/90-buildkit.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/ci-support/pkg/buildkit: rootless BuildKit.
+      user.max_user_namespaces = 63359
+  - path: /etc/systemd/system/asg-in-service.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Start this instance's services when it goes in service
+      After=network-online.target bootstrap-secrets.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=900
+      ExecStart=/usr/local/lib/asg/lifecycle.sh
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/asg-ssmcert-buildkit.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Check buildkit's certificate parameters for a new version and rotate in the window
+
+      [Service]
+      Type=oneshot
+      Environment=ASG_SSMCERT_CONF=/etc/asg/ssmcert-buildkit.conf
+      ExecStart=/usr/local/lib/asg/ssmcert-buildkit.sh check
+  - path: /etc/systemd/system/asg-ssmcert-buildkit.timer
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Check buildkit's certificate parameters every 60 minutes
+
+      [Timer]
+      OnBootSec=60min
+      OnUnitActiveSec=60min
+      RandomizedDelaySec=300
+  - path: /etc/systemd/system/asg-watchdog.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Local health check; marks the instance Unhealthy when it fails for too long
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/lib/asg/watchdog.sh
+  - path: /etc/systemd/system/asg-watchdog.timer
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Local health check, every 30 seconds
+
+      [Timer]
+      OnBootSec=120s
+      OnUnitActiveSec=30s
+      AccuracySec=1s
+  - path: /etc/systemd/system/bootstrap-ready.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Tell the Auto Scaling group this instance is ready
+      Wants=asg-in-service.service buildkit-imds-guard.service
+      After=network-online.target asg-in-service.service buildkit-imds-guard.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/lib/bootstrap/ready.sh
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/buildkit-imds-guard.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Keep everything but root away from the instance metadata service
+      DefaultDependencies=no
+      Before=network-pre.target buildkitd.service
+      Wants=network-pre.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStartPre=-/usr/sbin/nft delete table inet buildkit_imds
+      ExecStart=/usr/sbin/nft -f /etc/buildkit/imds-guard.nft
+      ExecStop=/usr/sbin/nft delete table inet buildkit_imds
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/buildkitd.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=BuildKit daemon (rootless, mutual TLS on :1234)
+      Wants=network-online.target
+      After=network-online.target buildkit-imds-guard.service
+      Requires=buildkit-imds-guard.service
+      RequiresMountsFor=/var/lib/buildkit
+
+      [Service]
+      Type=simple
+      User=buildkit
+      Group=buildkit
+      Environment=HOME=/var/lib/buildkit-home XDG_RUNTIME_DIR=/run/buildkit
+      RuntimeDirectory=buildkit
+      RuntimeDirectoryMode=0755
+      ExecStart=/usr/local/bin/rootlesskit --state-dir=/run/buildkit/rootlesskit --net=host /usr/local/bin/buildkitd --config=/etc/buildkit/buildkitd.toml
+      Delegate=yes
+      KillMode=mixed
+      TimeoutStopSec=120
+      Restart=always
+      RestartSec=5
+      LimitNOFILE=1048576
+      TasksMax=infinity
+      MemoryHigh=85%
+      MemoryMax=92%
+      CPUWeight=50
+  - path: /usr/local/lib/asg/in-service.d/00-ssmcert-buildkit-load.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # in-service step: ssmcert-buildkit-load
+      ASG_SSMCERT_CONF=/etc/asg/ssmcert-buildkit.conf /usr/local/lib/asg/ssmcert-buildkit.sh load
+  - path: /usr/local/lib/asg/in-service.d/01-buildkitd.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # in-service step: buildkitd
+      systemctl start buildkitd.service
+  - path: /usr/local/lib/asg/in-service.d/02-ssmcert-buildkit-timer.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # in-service step: ssmcert-buildkit-timer
+      systemctl start asg-ssmcert-buildkit.timer
+  - path: /usr/local/lib/asg/in-service.d/03-watchdog.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # in-service step: watchdog
+      systemctl start asg-watchdog.timer
+  - path: /usr/local/lib/asg/lifecycle.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # Generated by github.com/truvity/asg/module. Run by asg-in-service.service on
+      # every boot: in the warm pool it does nothing; on a boot into service it runs
+      # in-service.d, then the ready.d checks. Any failure exits non-zero, so the
+      # bootstrap-ready service abandons the launch instead of completing it.
+      set -euo pipefail
+
+      LIB="${ASG_LIB:-/usr/local/lib/asg}"
+
+      log() { printf '%s asg-in-service: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
+
+      imds() {
+        local t
+        t="$(curl -fsS --connect-timeout 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS --connect-timeout 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+
+      # An empty answer (no such path) means the instance is not in a group at all,
+      # which a cold start under test is: treat it as going in service.
+      state="$(imds autoscaling/target-lifecycle-state 2>/dev/null || true)"
+      case "$state" in
+        Warmed:*)
+          log "target lifecycle state '$state': parked, nothing to start"
+          exit 0
+          ;;
+        InService | "") ;;
+        *)
+          log "target lifecycle state '$state': nothing to do"
+          exit 0
+          ;;
+      esac
+
+      for f in "$LIB"/in-service.d/*; do
+        [ -e "$f" ] || continue
+        log "step $(basename "$f")"
+        bash -e "$f"
+      done
+
+      for f in "$LIB"/ready.d/*; do
+        [ -e "$f" ] || continue
+        limit="$(sed -n 's/^# asg-timeout=//p' "$f" | head -n 1)"
+        deadline=$((SECONDS + ${limit:-120}))
+        until bash "$f" >/dev/null 2>&1; do
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "ready check $(basename "$f") did not pass in time"
+            exit 1
+          fi
+          sleep 2
+        done
+        log "ready check $(basename "$f") passed"
+      done
+  - path: /usr/local/lib/asg/ready.d/00-buildkitd.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # asg-timeout=600
+      # ready check: buildkitd
+      timeout 10 /usr/local/bin/buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers >/dev/null
+  - path: /usr/local/lib/asg/ssmcert-buildkit.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # asg-ssmcert: a certificate, its key and a CA bundle from SSM Parameter
+      # Store into files under /run, and a rotation inside a nightly window for a
+      # daemon that loads them only at start. Generated by
+      # github.com/truvity/asg/modules/ssmcert.
+      #
+      #   load   read the parameters into DIR and record their versions
+      #   check  compare the recorded versions with the current ones; on a change,
+      #          rotate if the window is open
+      set -uo pipefail
+
+      # shellcheck disable=SC1090
+      . "${ASG_SSMCERT_CONF:?ASG_SSMCERT_CONF names the configuration}"
+
+      READY="${ASG_SSMCERT_READY:-/etc/asg/ssmcert-${NAME}-ready.sh}"
+      WATCHDOG_STATE="${ASG_WATCHDOG_STATE:-/run/asg-watchdog}"
+      POLL="${ASG_SSMCERT_POLL:-10}"
+
+      log() { printf '%s asg-ssmcert[%s]: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$NAME" "$*" >&2; }
+
+      imds() {
+        local t
+        t="$(curl -fsS -m 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+
+      REGION=""
+      region() {
+        [ -n "$REGION" ] || REGION="$(imds placement/region)" || { log "no region from the instance metadata"; return 1; }
+      }
+
+      params() {
+        printf '%s cert.pem 0644\n%s key.pem 0600\n' "$CERT_PARAM" "$KEY_PARAM"
+        [ -z "$CA_PARAM" ] || printf '%s ca.pem 0644\n' "$CA_PARAM"
+      }
+
+      # load reads every parameter (decrypted) into a new directory beside DIR and
+      # swaps it in, so a reader never sees half a set.
+      load() {
+        region || return 1
+        umask 077
+        local parent tmp param file mode out v i
+        parent="$(dirname "$DIR")"
+        install -d -m 0755 "$parent" || return 1
+        tmp="$(mktemp -d "$parent/.ssmcert-$NAME.XXXXXX")" || return 1
+        : >"$tmp/versions"
+        while read -r param file mode; do
+          out=""
+          for i in 1 2 3 4 5; do
+            if out="$(aws ssm get-parameter --region "$REGION" --name "$param" --with-decryption --output json)" && [ -n "$out" ]; then
+              break
+            fi
+            out=""
+            sleep $((i * 3))
+          done
+          if [ -z "$out" ]; then
+            log "cannot read $param"
+            rm -rf "$tmp"
+            return 1
+          fi
+          if ! v="$(printf '%s' "$out" | python3 -c 'import json,sys
+      p = json.load(sys.stdin)["Parameter"]
+      with open(sys.argv[1], "w") as f:
+          f.write(p["Value"])
+      print(p["Version"])' "$tmp/$file")"; then
+            out=""
+            log "cannot parse $param"
+            rm -rf "$tmp"
+            return 1
+          fi
+          out=""
+          chmod "$mode" "$tmp/$file"
+          printf '%s %s\n' "$param" "$v" >>"$tmp/versions"
+        done < <(params)
+        chmod 0644 "$tmp/versions"
+        chmod 0700 "$tmp"
+        [ -z "$OWNER" ] || chown -R "$OWNER" "$tmp" || { rm -rf "$tmp"; return 1; }
+        if [ -e "$DIR" ]; then
+          rm -rf "$DIR.old"
+          mv "$DIR" "$DIR.old" || { rm -rf "$tmp"; return 1; }
+        fi
+        mv "$tmp" "$DIR" || return 1
+        rm -rf "$DIR.old"
+        log "loaded $(tr '\n' ' ' <"$DIR/versions")"
+      }
+
+      in_window() {
+        local h
+        h=$((10#${ASG_SSMCERT_HOUR:-$(date -u +%H)}))
+        if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+          [ "$h" -ge "$WINDOW_START" ] && [ "$h" -lt "$WINDOW_END" ]
+        else
+          [ "$h" -ge "$WINDOW_START" ] || [ "$h" -lt "$WINDOW_END" ]
+        fi
+      }
+
+      connections() { ss -Htn state established "( sport = :$DRAIN_PORT )" | wc -l; }
+
+      # pause_watchdog keeps the watchdog from acting while the daemon restarts
+      # on purpose (watchdog >= v0.4.0 honours paused-until).
+      pause_watchdog() {
+        mkdir -p "$WATCHDOG_STATE"
+        echo $(($(date +%s) + $1)) >"$WATCHDOG_STATE/paused-until"
+      }
+      resume_watchdog() { rm -f "$WATCHDOG_STATE/paused-until" "$WATCHDOG_STATE/unhealthy-since"; }
+
+      restart_and_wait() {
+        load || return 1
+        log "restarting ${RESTART_UNITS[*]}"
+        systemctl restart "${RESTART_UNITS[@]}" || return 1
+        local deadline=$((SECONDS + READY_TIMEOUT))
+        until bash "$READY" >/dev/null 2>&1; do
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "not ready after ${READY_TIMEOUT}s"
+            return 1
+          fi
+          sleep "$POLL"
+        done
+        log "ready with the new certificate"
+      }
+
+      rotate_in_place() {
+        local idle=0 deadline=$((SECONDS + 3000))
+        while [ "$idle" -lt "$IDLE_SECONDS" ]; do
+          if [ "$SECONDS" -ge "$deadline" ] || ! in_window; then
+            log "no idle period of ${IDLE_SECONDS}s; trying again at the next check"
+            return 0
+          fi
+          if [ "$(connections)" -eq 0 ]; then idle=$((idle + POLL)); else idle=0; fi
+          sleep "$POLL"
+        done
+        pause_watchdog $((READY_TIMEOUT + 300))
+        if restart_and_wait; then
+          resume_watchdog
+          return 0
+        fi
+        resume_watchdog
+        return 1
+      }
+
+      # group prints: desired max in-service-others busy-others self-state.
+      group() {
+        aws autoscaling describe-auto-scaling-groups --region "$REGION" --auto-scaling-group-names "$GROUP" --output json |
+          python3 -c 'import json,sys
+      g = json.load(sys.stdin)["AutoScalingGroups"][0]
+      me = sys.argv[1]
+      others = [i for i in g["Instances"] if i["InstanceId"] != me]
+      mine = [i["LifecycleState"] for i in g["Instances"] if i["InstanceId"] == me]
+      ins = sum(1 for i in others if i["LifecycleState"] == "InService")
+      busy = sum(1 for i in others if i["LifecycleState"] != "InService")
+      print(g["DesiredCapacity"], g["MaxSize"], ins, busy, mine[0] if mine else "Gone")' "$IID"
+      }
+
+      # leave_standby returns the instance to service, completes the launch hook
+      # that ExitStandby runs again, and sets the desired capacity back to before.
+      leave_standby() {
+        local before="$1" d m ins busy state deadline
+        aws autoscaling exit-standby --region "$REGION" --auto-scaling-group-name "$GROUP" --instance-ids "$IID" >/dev/null ||
+          { log "exit-standby failed"; return 1; }
+        deadline=$((SECONDS + 900))
+        while :; do
+          read -r d m ins busy state < <(group) || state=""
+          case "$state" in
+            InService) break ;;
+            Pending:Wait)
+              aws autoscaling complete-lifecycle-action --region "$REGION" --auto-scaling-group-name "$GROUP" \
+                --lifecycle-hook-name "$HOOK" --instance-id "$IID" --lifecycle-action-result CONTINUE >/dev/null 2>&1 || true
+              ;;
+          esac
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "not back in service after 15 minutes (state '$state')"
+            return 1
+          fi
+          sleep "$POLL"
+        done
+        read -r d m ins busy state < <(group) || return 1
+        if [ "$d" -eq $((before + 1)) ]; then
+          log "back in service; desired capacity $d -> $before (the termination policy picks who leaves)"
+          aws autoscaling set-desired-capacity --region "$REGION" --auto-scaling-group-name "$GROUP" --desired-capacity "$before" >/dev/null ||
+            { log "set-desired-capacity failed"; return 1; }
+        else
+          log "back in service; desired capacity is $d, not $((before + 1)): left as it is"
+        fi
+      }
+
+      rotate_standby() {
+        local d m ins busy state deadline
+        IID="$(imds instance-id)" || { log "no instance id"; return 1; }
+        read -r d m ins busy state < <(group) || { log "cannot describe $GROUP"; return 1; }
+        if [ "$state" != InService ] || [ "$busy" -ne 0 ] || [ "$ins" -lt $((d - 1)) ] || [ "$d" -ge "$m" ]; then
+          log "group busy or full (desired $d, max $m, others in service $ins, others busy $busy, self $state); trying again at the next check"
+          return 0
+        fi
+        pause_watchdog $((REPLACEMENT_SECONDS + DRAIN_SECONDS + READY_TIMEOUT + 1200))
+        log "entering Standby; the group puts a replacement in service"
+        if ! aws autoscaling enter-standby --region "$REGION" --auto-scaling-group-name "$GROUP" --instance-ids "$IID" \
+          --no-should-decrement-desired-capacity >/dev/null; then
+          log "enter-standby failed"
+          resume_watchdog
+          return 1
+        fi
+        deadline=$((SECONDS + REPLACEMENT_SECONDS))
+        while :; do
+          read -r _ _ ins busy state < <(group) || state=""
+          [ "$state" = Standby ] && [ "$ins" -ge "$d" ] && break
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "no replacement in service after ${REPLACEMENT_SECONDS}s; leaving Standby without a restart"
+            leave_standby "$d"
+            resume_watchdog
+            return 1
+          fi
+          sleep "$POLL"
+        done
+        deadline=$((SECONDS + DRAIN_SECONDS))
+        until [ "$(connections)" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; do sleep "$POLL"; done
+        log "$(connections) connection(s) left on :$DRAIN_PORT"
+        if ! restart_and_wait; then
+          log "the restart failed; terminating this instance, the replacement keeps serving"
+          aws autoscaling terminate-instance-in-auto-scaling-group --region "$REGION" --instance-id "$IID" \
+            --no-should-decrement-desired-capacity >/dev/null || log "terminate failed"
+          return 1
+        fi
+        leave_standby "$d"
+        local rc=$?
+        resume_watchdog
+        return "$rc"
+      }
+
+      check() {
+        region || return 1
+        [ -s "$DIR/versions" ] || { log "nothing loaded yet ($DIR/versions)"; return 1; }
+        local param ver cur changed=0
+        while read -r param ver; do
+          cur="$(aws ssm get-parameter --region "$REGION" --name "$param" --query Parameter.Version --output text)" ||
+            { log "cannot read the version of $param"; return 1; }
+          if [ "$cur" != "$ver" ]; then
+            log "$param: version $ver loaded, $cur current"
+            changed=1
+          fi
+        done <"$DIR/versions"
+        [ "$changed" = 1 ] || return 0
+        if ! in_window; then
+          log "a new version waits for the window ($WINDOW_START:00-$WINDOW_END:00 UTC)"
+          return 0
+        fi
+        if [ "$STANDBY" = 1 ]; then rotate_standby; else rotate_in_place; fi
+      }
+
+      case "${1:-}" in
+        load) load ;;
+        check) check ;;
+        *)
+          echo "usage: $0 load|check" >&2
+          exit 2
+          ;;
+      esac
+  - path: /usr/local/lib/asg/watch.d/00-buildkitd.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # watch check: buildkitd
+      timeout 10 /usr/local/bin/buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers >/dev/null
+  - path: /usr/local/lib/asg/watchdog.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # asg-watchdog: runs every check in watch.d; once they have been failing for
+      # FAIL_SECONDS it restarts RESTART_UNITS (up to RESTART_ATTEMPTS times), then
+      # asks the Auto Scaling group to replace this instance. It is the only
+      # recovery a stateless box has: Restart=always in the units handles the quick
+      # failures before that. Generated by github.com/truvity/asg/modules/watchdog.
+      set -uo pipefail
+
+      LIB="${ASG_LIB:-/usr/local/lib/asg}"
+      STATE="${ASG_WATCHDOG_STATE:-/run/asg-watchdog}"
+
+      # shellcheck disable=SC1090
+      . "${ASG_WATCHDOG_CONF:-/etc/asg/watchdog.conf}"
+
+      log() { printf '%s asg-watchdog: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
+
+      imds() {
+        local t
+        t="$(curl -fsS -m 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+
+      # Another module restarting the service on purpose (ssmcert's rotation)
+      # pauses the watchdog until a time it writes here.
+      if [ -f "$STATE/paused-until" ] && [ "$(date +%s)" -lt "$(cat "$STATE/paused-until" 2>/dev/null || echo 0)" ]; then
+        exit 0
+      fi
+
+      ok=1
+      for f in "$LIB"/watch.d/*; do
+        [ -e "$f" ] || continue
+        bash "$f" >/dev/null 2>&1 || { log "check $(basename "$f") failed"; ok=0; }
+      done
+
+      mkdir -p "$STATE"
+      if [ "$ok" = 1 ]; then
+        rm -f "$STATE/unhealthy-since" "$STATE/restarts"
+        exit 0
+      fi
+
+      now="$(date +%s)"
+      [ -f "$STATE/unhealthy-since" ] || echo "$now" >"$STATE/unhealthy-since"
+      since="$(cat "$STATE/unhealthy-since")"
+      log "failing since $since"
+      [ $((now - since)) -ge "$FAIL_SECONDS" ] || exit 0
+
+      restarts="$(cat "$STATE/restarts" 2>/dev/null || echo 0)"
+      if [ "$restarts" -lt "$RESTART_ATTEMPTS" ] && [ "${#RESTART_UNITS[@]}" -gt 0 ]; then
+        restarts=$((restarts + 1))
+        echo "$restarts" >"$STATE/restarts"
+        echo "$now" >"$STATE/unhealthy-since"
+        log "restarting ${RESTART_UNITS[*]} (attempt $restarts of $RESTART_ATTEMPTS)"
+        systemctl restart "${RESTART_UNITS[@]}" || log "restart failed"
+        exit 0
+      fi
+
+      iid="$(imds instance-id)"
+      region="$(imds placement/region)"
+      log "failing for over $((FAIL_SECONDS / 60)) minutes; marking $iid Unhealthy"
+      aws autoscaling set-instance-health --instance-id "$iid" --health-status Unhealthy --region "$region" || log "set-instance-health failed"
+  - path: /usr/local/lib/bootstrap/ready.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # Generated by github.com/truvity/asg/bootstrap; run by bootstrap-ready.service on every boot.
+      set -e
+      imds() {
+        local t
+        t="$(curl -fsS --connect-timeout 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS --connect-timeout 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+      bs_die() {
+        echo "bootstrap: $1" >&2
+        exit 1
+      }
+      export -f imds bs_die
+      bs_abort() {
+        echo "bootstrap: $1" >&2
+        if ! aws autoscaling complete-lifecycle-action --region "$(imds placement/region)" \
+          --auto-scaling-group-name 'devel-buildkit-arm64' --lifecycle-hook-name 'devel-buildkit-arm64-launch' \
+          --lifecycle-action-result ABANDON --instance-id "$(imds instance-id)" >/dev/null 2>&1; then
+          aws autoscaling set-instance-health --region "$(imds placement/region)" \
+            --instance-id "$(imds instance-id)" --health-status Unhealthy >/dev/null 2>&1 || true
+        fi
+        exit 1
+      }
+      systemctl is-active --quiet 'asg-in-service.service' || bs_abort 'asg-in-service.service is not active'
+      systemctl is-active --quiet 'buildkit-imds-guard.service' || bs_abort 'buildkit-imds-guard.service is not active'
+      for i in 1 2 3; do
+        if out="$(aws autoscaling complete-lifecycle-action --region "$(imds placement/region)" \
+          --auto-scaling-group-name 'devel-buildkit-arm64' --lifecycle-hook-name 'devel-buildkit-arm64-launch' \
+          --lifecycle-action-result CONTINUE --instance-id "$(imds instance-id)" 2>&1)"; then
+          exit 0
+        fi
+        echo "bootstrap: CONTINUE attempt $i: $out" >&2
+        sleep $((i * 3))
+      done
+      echo "bootstrap: no CONTINUE sent; if an action was pending, the hook's DefaultResult applies" >&2
+      exit 0
+runcmd:
+  - set -e
+  - - bash
+    - -ec
+    - |
+      # binary buildkit v0.33.0
+      imds() {
+        local t
+        t="$(curl -fsS --connect-timeout 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS --connect-timeout 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+      bs_die() {
+        echo "bootstrap: $1" >&2
+        aws autoscaling complete-lifecycle-action --region "$(imds placement/region)" \
+          --auto-scaling-group-name 'devel-buildkit-arm64' --lifecycle-hook-name 'devel-buildkit-arm64-launch' \
+          --lifecycle-action-result ABANDON --instance-id "$(imds instance-id)" >/dev/null 2>&1 || true
+        exit 1
+      }
+      case "$(uname -m)" in
+        x86_64 | amd64) arch=amd64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) bs_die "unsupported architecture $(uname -m)" ;;
+      esac
+      case "$arch" in
+        amd64) url='https://github.com/moby/buildkit/releases/download/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz' sum='b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead' ;;
+        arm64) url='https://github.com/moby/buildkit/releases/download/v0.33.0/buildkit-v0.33.0.linux-arm64.tar.gz' sum='e5acfb5929f967fde3b925ddb39f79fd481a0e96774c641fab3a0e83950d7bfa' ;;
+        *) bs_die 'no build of buildkit v0.33.0 for this architecture' ;;
+      esac
+      dest='/usr/local/src/buildkit.tar.gz' mode=0755
+      tmp="$(mktemp)" || bs_die "mktemp failed"
+      trap 'rm -f "$tmp"' EXIT
+      ok=0
+      for i in 1 2 3 4 5; do
+        if curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp" "$url" \
+          && printf '%s  %s\n' "$sum" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
+          ok=1
+          break
+        fi
+        echo "bootstrap: download of $url failed or did not match its sha256 (attempt $i)" >&2
+        sleep 3
+      done
+      [ "$ok" = 1 ] || bs_die "giving up on $url"
+      install -D -m "$mode" "$tmp" "$dest" || bs_die "cannot install $dest"
+  - - bash
+    - -ec
+    - |
+      # binary rootlesskit v3.0.1
+      imds() {
+        local t
+        t="$(curl -fsS --connect-timeout 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS --connect-timeout 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+      bs_die() {
+        echo "bootstrap: $1" >&2
+        aws autoscaling complete-lifecycle-action --region "$(imds placement/region)" \
+          --auto-scaling-group-name 'devel-buildkit-arm64' --lifecycle-hook-name 'devel-buildkit-arm64-launch' \
+          --lifecycle-action-result ABANDON --instance-id "$(imds instance-id)" >/dev/null 2>&1 || true
+        exit 1
+      }
+      case "$(uname -m)" in
+        x86_64 | amd64) arch=amd64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) bs_die "unsupported architecture $(uname -m)" ;;
+      esac
+      case "$arch" in
+        amd64) url='https://github.com/rootless-containers/rootlesskit/releases/download/v3.0.1/rootlesskit-x86_64.tar.gz' sum='0850aa446151dfbdca15ed228ff0151751792cb5a99260b9a6738e1b490cc37b' ;;
+        arm64) url='https://github.com/rootless-containers/rootlesskit/releases/download/v3.0.1/rootlesskit-aarch64.tar.gz' sum='fdd9d2aa12bb8914081dfe1cd129c5a6a06cf1f80c732713f905a92c07b9b45c' ;;
+        *) bs_die 'no build of rootlesskit v3.0.1 for this architecture' ;;
+      esac
+      dest='/usr/local/src/rootlesskit.tar.gz' mode=0755
+      tmp="$(mktemp)" || bs_die "mktemp failed"
+      trap 'rm -f "$tmp"' EXIT
+      ok=0
+      for i in 1 2 3 4 5; do
+        if curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp" "$url" \
+          && printf '%s  %s\n' "$sum" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
+          ok=1
+          break
+        fi
+        echo "bootstrap: download of $url failed or did not match its sha256 (attempt $i)" >&2
+        sleep 3
+      done
+      [ "$ok" = 1 ] || bs_die "giving up on $url"
+      install -D -m "$mode" "$tmp" "$dest" || bs_die "cannot install $dest"
+  - - bash
+    - -ec
+    - |
+      # systemd daemon-reload
+      systemctl daemon-reload
+  - - bash
+    - -ec
+    - |
+      # buildkit install
+      set -euo pipefail
+      if ! id buildkit >/dev/null 2>&1; then
+        useradd -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 --system --create-home --home-dir /var/lib/buildkit-home --shell /sbin/nologin buildkit
+      fi
+      grep -q '^buildkit:' /etc/subuid || echo 'buildkit:300000:65536' >>/etc/subuid
+      grep -q '^buildkit:' /etc/subgid || echo 'buildkit:300000:65536' >>/etc/subgid
+      tar -xzf /usr/local/src/buildkit.tar.gz -C /usr/local bin
+      tar -xzf /usr/local/src/rootlesskit.tar.gz -C /usr/local/bin rootlesskit rootlessctl
+      rm -f /usr/local/src/buildkit.tar.gz /usr/local/src/rootlesskit.tar.gz
+      sysctl --system >/dev/null
+
+      # The cache volume: the launch template's /dev/sdf, which a Nitro instance shows
+      # as an NVMe device behind a udev link.
+      dev=""
+      for _ in $(seq 1 90); do
+        for c in /dev/sdf /dev/xvdf; do
+          if [ -b "$c" ]; then dev="$(readlink -f "$c")"; break 2; fi
+        done
+        sleep 2
+      done
+      [ -n "$dev" ] || { echo "buildkit: no cache volume at /dev/sdf" >&2; exit 1; }
+      blkid "$dev" >/dev/null 2>&1 || mkfs.xfs -q -L buildkit-cache "$dev"
+      install -d -m 0700 /var/lib/buildkit
+      grep -q 'LABEL=buildkit-cache ' /etc/fstab || echo 'LABEL=buildkit-cache /var/lib/buildkit xfs defaults,noatime,nofail 0 2' >>/etc/fstab
+      mountpoint -q /var/lib/buildkit || mount /var/lib/buildkit
+      chown buildkit:buildkit /var/lib/buildkit
+      chmod 0700 /var/lib/buildkit
+  - - bash
+    - -ec
+    - |
+      # systemd units
+      systemctl enable 'asg-in-service.service'
+      systemctl enable --now 'buildkit-imds-guard.service'
+  - - bash
+    - -ec
+    - |
+      # report ready
+      systemctl enable --now bootstrap-ready.service
