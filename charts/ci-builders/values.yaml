@@ -45,7 +45,7 @@ nixWorkerImage:
 # on distroless. Stamped at release like the two above.
 cacheRedirectImage:
   registry: ghcr.io
-  repository: truvity/ci-plane/cache-redirect
+  repository: truvity/ci-support/cache-redirect
   digest: "" # sha256:… — stamped at release; empty renders the tag instead
   tag: latest
 
