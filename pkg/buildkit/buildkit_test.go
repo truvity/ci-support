@@ -112,7 +112,7 @@ func TestModuleStartsOnlyInServiceAndRenders(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"buildkit-v0.33.0.linux-arm64.tar.gz", "rootlesskit-aarch64.tar.gz", "mkfs.xfs -q -L buildkit-cache", "user.max_user_namespaces = 63359",
+		"buildkit-v0.33.0.linux-arm64.tar.gz", "rootlesskit-aarch64.tar.gz", "mkfs.xfs -q -L bkcache", "user.max_user_namespaces = 63359",
 		"systemctl enable --now 'buildkit-imds-guard.service'"} {
 		if !strings.Contains(r.CloudConfig, want) {
 			t.Errorf("user-data lacks %s", want)
@@ -152,5 +152,13 @@ func TestArch(t *testing.T) {
 
 	if _, err := buildkit.Arch("riscv64"); err == nil {
 		t.Error("riscv64 accepted")
+	}
+}
+
+// mkfs.xfs refuses a label of more than 12 characters, and the boot script
+// then never completes the launch hook.
+func TestCacheLabelFitsXFS(t *testing.T) {
+	if n := len(buildkit.CacheLabel); n > 12 {
+		t.Errorf("CacheLabel %q is %d characters; xfs allows 12", buildkit.CacheLabel, n)
 	}
 }

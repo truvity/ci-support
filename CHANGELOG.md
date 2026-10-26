@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## v0.1.3
+
+- **Fixed: the BuildKit builders' cache volume is labelled `bkcache`.** `mkfs.xfs` refuses labels of more than 12 characters, so with `buildkit-cache` the first-boot script failed, the launch hook never completed, and no builder came into service. A test now holds the label to 12 characters.
+
 ## v0.1.2
 
 - **New chart block `externalBuilders` (off by default): the TLS material of BuildKit builders outside the cluster.** Per architecture a cert-manager `Certificate` (`buildkitd-external-<arch>`) for the names clients dial, from the given issuer, and a `PushSecret` that writes its `tls.crt` and `tls.key` as `<arch>/cert` and `<arch>/key`; and one `PushSecret` that writes the client CA certificate as `client-ca`, read from `clientCA.key` (`ca.crt`) of a Secret in the release namespace (an external client's, whose `ca.crt` is the client CA). It is independent of `buildkitd.enabled`, so a release may render it alone. The refusals: no issuer, an architecture without names, no store, no client CA Secret, a remote name that is not a relative parameter path. docs/mtls.md, "Builders outside the cluster".

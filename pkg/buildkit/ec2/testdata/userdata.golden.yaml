@@ -791,9 +791,9 @@ runcmd:
         sleep 2
       done
       [ -n "$dev" ] || { echo "buildkit: no cache volume at /dev/sdf" >&2; exit 1; }
-      blkid "$dev" >/dev/null 2>&1 || mkfs.xfs -q -L buildkit-cache "$dev"
+      blkid "$dev" >/dev/null 2>&1 || mkfs.xfs -q -L bkcache "$dev"
       install -d -m 0700 /var/lib/buildkit
-      grep -q 'LABEL=buildkit-cache ' /etc/fstab || echo 'LABEL=buildkit-cache /var/lib/buildkit xfs defaults,noatime,nofail 0 2' >>/etc/fstab
+      grep -q 'LABEL=bkcache ' /etc/fstab || echo 'LABEL=bkcache /var/lib/buildkit xfs defaults,noatime,nofail 0 2' >>/etc/fstab
       mountpoint -q /var/lib/buildkit || mount /var/lib/buildkit
       chown buildkit:buildkit /var/lib/buildkit
       chmod 0700 /var/lib/buildkit

@@ -48,7 +48,7 @@ const (
 	SocketDir    = "/run/buildkit"
 	Socket       = "unix://" + SocketDir + "/buildkitd.sock"
 	CacheDir     = "/var/lib/buildkit"
-	CacheLabel   = "buildkit-cache"
+	CacheLabel   = "bkcache"
 	HomeDir      = "/var/lib/buildkit-home"
 	releaseTar   = "/usr/local/src/buildkit.tar.gz"
 	rootlessTar  = "/usr/local/src/rootlesskit.tar.gz"
