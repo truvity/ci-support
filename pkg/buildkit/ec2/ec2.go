@@ -441,7 +441,7 @@ func KeyPolicyStatement(partition, region, account, name string, c Certificate) 
 		"Action":    []string{"kms:Decrypt"},
 		"Resource":  "*",
 		"Condition": map[string]any{
-			"ArnLike": map[string]any{"aws:PrincipalArn": fmt.Sprintf("arn:%s:iam::%s:role/%s", partition, account, name)},
+			"ArnEquals": map[string]any{"aws:PrincipalArn": fmt.Sprintf("arn:%s:iam::%s:role/%s", partition, account, name)},
 			"StringEquals": map[string]any{
 				"kms:ViaService":                      "ssm." + region + ".amazonaws.com",
 				"kms:EncryptionContext:PARAMETER_ARN": params,
