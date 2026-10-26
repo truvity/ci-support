@@ -45,6 +45,15 @@ the rotation on its own group, `autoscaling:DescribeAutoScalingGroups`, and
 `kms:Decrypt` of the parameters' key through SSM, for those parameters only.
 The key is named by alias (`kms:ResourceAliases`), so it need not exist when
 the stack is previewed; the key's own policy must also admit the role.
+`ec2.KeyPolicyStatement` is that half: the statement the caller puts in the
+key's policy, one per builder, which admits the role by `aws:PrincipalArn`
+(so the key may exist before the role) to `kms:Decrypt` through SSM for the
+same three parameters as the role's own grant.
+
+The certificate, its key and the client CA come from the chart's
+`externalBuilders` (docs/mtls.md, "Builders outside the cluster"):
+cert-manager issues the server certificate in a cluster and External Secrets
+pushes it, with the client CA, under the parameter names this package reads.
 
 ## The certificate rotation
 

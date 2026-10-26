@@ -3,6 +3,11 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## v0.1.2
+
+- **New chart block `externalBuilders` (off by default): the TLS material of BuildKit builders outside the cluster.** Per architecture a cert-manager `Certificate` (`buildkitd-external-<arch>`) for the names clients dial, from the given issuer, and a `PushSecret` that writes its `tls.crt` and `tls.key` as `<arch>/cert` and `<arch>/key`; and one `PushSecret` that writes the client CA certificate as `client-ca`, read from `clientCA.key` (`ca.crt`) of a Secret in the release namespace (an external client's, whose `ca.crt` is the client CA). It is independent of `buildkitd.enabled`, so a release may render it alone. The refusals: no issuer, an architecture without names, no store, no client CA Secret, a remote name that is not a relative parameter path. docs/mtls.md, "Builders outside the cluster".
+- **New `ec2.KeyPolicyStatement`:** the builder's part of the policy of the certificate parameters' key, `kms:Decrypt` by the builder's role (by `aws:PrincipalArn`, so the key may exist before the role) through SSM for the same three parameters as the role's own grant, one statement per builder.
+
 ## v0.1.1
 
 - **`pkg/buildkit/ec2` registers no component of its own.** `ec2.New` returns a plain holder, and the box (`truvity:asg:Box`) and its listener (`truvity:asg:Front`) are registered with the caller's options. In v0.1.0 the wrapper passed itself as the parent to truvity/asg, whose own children then took the wrapper as their parent too (a caller's `Parent` overrides the library's), so the URNs would have moved the day that changes. Nothing was deployed with v0.1.0.

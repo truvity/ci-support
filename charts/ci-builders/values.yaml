@@ -393,6 +393,63 @@ buildkitd:
       # as buildkitd.networkPolicy.additionalIngress.
       additionalIngress: []
 
+# The TLS material of BuildKit builders that run OUTSIDE this cluster, on
+# machines of their own (pkg/buildkit/ec2), which read it from a store the
+# estate owns instead of mounting a Secret. OFF by default. Independent of
+# buildkitd.enabled: a release may render this alone. Per architecture, a
+# server Certificate (Secret buildkitd-external-<arch>-tls) and a PushSecret
+# that writes its tls.crt and tls.key as <arch>/<names.cert> and
+# <arch>/<names.key>; and one PushSecret that writes the client CA
+# certificate as <names.clientCA>. Names are relative to the store's own
+# prefix. docs/mtls.md#builders-outside-the-cluster.
+externalBuilders:
+  enabled: false
+  archs: [arm64, amd64]
+  serverCertificate:
+    # The same issuer as buildkitd.mtls.serverCertificate, so a client
+    # verifies either kind of builder against one CA bundle.
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+    # dnsNames per arch, required: the names clients dial. The first one is
+    # also the certificate's common name.
+    #   dnsNames:
+    #     arm64: [arm64.builders.example.private]
+    #     amd64: [amd64.builders.example.private]
+    dnsNames: {}
+    duration: 2160h
+    renewBefore: 720h
+    privateKey:
+      algorithm: ECDSA
+      size: 384
+  # Where the client CA certificate is read from: a Secret in the release
+  # namespace whose `key` holds it. A PushSecret reads only Secrets of its
+  # own namespace; the CA's own Secret is in clientCA.namespace and the
+  # trust-manager Bundle publishes a ConfigMap. Every certificate the client
+  # CA issues carries it in ca.crt, so an external client's Secret
+  # (buildkitd.mtls.clientCA.externalClients, buildkit-client-<name>-tls)
+  # is one, and the Secret of the client that dials these builders is the
+  # closest. Only `key` is pushed from it. Required.
+  clientCA:
+    secretName: ""
+    key: ca.crt
+  push:
+    # Required: the store the machines read from (Parameter Store, say).
+    storeRef:
+      name: ""
+      kind: ClusterSecretStore
+    # Shorter than renewBefore.
+    refreshInterval: 1h
+    names:
+      cert: cert
+      key: key
+      clientCA: client-ca
+    secretType: SecureString
+    # Empty: the provider's default key.
+    kmsKeyId: ""
+    tags: {}
+
 nixWorkers:
   # Persistent remote Nix builders, one native worker per architecture.
   # Disabled by default because enabling requires at least one public key

@@ -406,3 +406,71 @@ func decrypt(pc asg.PolicyContext, c Certificate) asg.Statement {
 		},
 	}
 }
+
+// KeyPolicyStatement is the builder's part of the policy of the key behind
+// Certificate.KeyAlias: kms:Decrypt by the builder's role (the role New
+// creates is named Name), through SSM, for the builder's three parameters
+// only, the same three as the role's own grant. The principal is the
+// account, narrowed by aws:PrincipalArn, so the key can be created before
+// the role exists and the statement survives the role being replaced. The
+// key and the rest of its policy are the caller's; a key with several
+// builders (one per architecture) takes one statement per builder, so no
+// builder can decrypt another's key.
+func KeyPolicyStatement(partition, region, account, name string, c Certificate) (map[string]any, error) {
+	if !nameRe.MatchString(name) {
+		return nil, fmt.Errorf("key policy statement: name %q: want lower-case letters, digits and -, at most 48", name)
+	}
+
+	if c.Cert == "" || c.Key == "" || c.ClientCA == "" {
+		return nil, errors.New("key policy statement: Certificate.Cert, Key and ClientCA are required parameter names")
+	}
+
+	if partition == "" || region == "" || account == "" {
+		return nil, errors.New("key policy statement: partition, region and account are required")
+	}
+
+	params := make([]string, 0, 3)
+	for _, p := range []string{c.Cert, c.Key, c.ClientCA} {
+		params = append(params, asg.ParameterARN(partition, region, account, p))
+	}
+
+	return map[string]any{
+		"Sid":       "Builder" + sidWord(name) + "DecryptsItsCertificate",
+		"Effect":    "Allow",
+		"Principal": map[string]any{"AWS": fmt.Sprintf("arn:%s:iam::%s:root", partition, account)},
+		"Action":    []string{"kms:Decrypt"},
+		"Resource":  "*",
+		"Condition": map[string]any{
+			"ArnLike": map[string]any{"aws:PrincipalArn": fmt.Sprintf("arn:%s:iam::%s:role/%s", partition, account, name)},
+			"StringEquals": map[string]any{
+				"kms:ViaService":                      "ssm." + region + ".amazonaws.com",
+				"kms:EncryptionContext:PARAMETER_ARN": params,
+			},
+		},
+	}, nil
+}
+
+// sidWord is a name as one statement-id word: devel-buildkit-arm64 is
+// DevelBuildkitArm64.
+func sidWord(name string) string {
+	var b []byte
+
+	up := true
+
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+
+		switch {
+		case ch == '-':
+			up = true
+		case up && ch >= 'a' && ch <= 'z':
+			b = append(b, ch-'a'+'A')
+			up = false
+		default:
+			b = append(b, ch)
+			up = false
+		}
+	}
+
+	return string(b)
+}

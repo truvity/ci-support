@@ -317,6 +317,76 @@
       },
       "description": "Rootless BuildKit builders, one per architecture."
     },
+    "externalBuilders": {
+      "description": "The TLS material of BuildKit builders outside the cluster: per arch a server Certificate and a PushSecret of its pair, and one PushSecret of the client CA certificate. Independent of buildkitd.enabled.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "archs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["arm64", "amd64"]}},
+        "serverCertificate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issuerRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string"},
+                "kind": {"type": "string", "enum": ["ClusterIssuer", "Issuer"]},
+                "group": {"type": "string"}
+              }
+            },
+            "dnsNames": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "arm64": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "amd64": {"type": "array", "items": {"type": "string", "minLength": 1}}
+              }
+            },
+            "duration": {"type": "string"},
+            "renewBefore": {"type": "string"},
+            "privateKey": {"type": "object"}
+          }
+        },
+        "clientCA": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": {"type": "string"},
+            "key": {"type": "string", "minLength": 1}
+          }
+        },
+        "push": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "storeRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string"},
+                "kind": {"type": "string", "enum": ["ClusterSecretStore", "SecretStore"]}
+              }
+            },
+            "refreshInterval": {"type": "string", "minLength": 1},
+            "names": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cert": {"type": "string", "minLength": 1},
+                "key": {"type": "string", "minLength": 1},
+                "clientCA": {"type": "string", "minLength": 1}
+              }
+            },
+            "secretType": {"type": "string", "enum": ["SecureString", "String"]},
+            "kmsKeyId": {"type": "string"},
+            "tags": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        }
+      }
+    },
     "nixWorkers": {
       "type": "object",
       "properties": {

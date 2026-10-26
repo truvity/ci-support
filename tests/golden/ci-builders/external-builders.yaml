@@ -1,0 +1,200 @@
+---
+# Source: ci-builders/templates/external-builders.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: buildkitd-external-arm64
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+    ci-plane.io/arch: arm64
+spec:
+  secretName: buildkitd-external-arm64-tls
+  commonName: "arm64.machines.example.private"
+  dnsNames:
+    - arm64.machines.example.private
+    - arm64.builders.example.private
+    - builders.example.private
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: example-private
+
+---
+# Source: ci-builders/templates/external-builders.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: buildkitd-external-amd64
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+    ci-plane.io/arch: amd64
+spec:
+  secretName: buildkitd-external-amd64-tls
+  commonName: "amd64.machines.example.private"
+  dnsNames:
+    - amd64.machines.example.private
+    - amd64.builders.example.private
+    - builders.example.private
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: example-private
+
+---
+# Source: ci-builders/templates/external-builders.yaml
+# The arm64 builder's certificate (with its chain) and key, each to its
+# own parameter, relative to the store's prefix.
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: buildkitd-external-arm64
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+    ci-plane.io/arch: arm64
+spec:
+  refreshInterval: 1h
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: example-server-push
+      kind: ClusterSecretStore
+  selector:
+    secret:
+      name: buildkitd-external-arm64-tls
+  # conversionStrategy is the field the CRD defaults to None: written out, so
+  # the object Argo CD applies is the object the cluster stores.
+  data:
+    - conversionStrategy: None
+      match:
+        secretKey: tls.crt
+        remoteRef:
+          remoteKey: "arm64/cert"
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          description: 'BuildKit builder arm64: tls.crt, pushed by External Secrets'
+          kmsKeyID: alias/example-server
+          secretType: SecureString
+          tags:
+            component: ci
+    - conversionStrategy: None
+      match:
+        secretKey: tls.key
+        remoteRef:
+          remoteKey: "arm64/key"
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          description: 'BuildKit builder arm64: tls.key, pushed by External Secrets'
+          kmsKeyID: alias/example-server
+          secretType: SecureString
+          tags:
+            component: ci
+
+---
+# Source: ci-builders/templates/external-builders.yaml
+# The amd64 builder's certificate (with its chain) and key, each to its
+# own parameter, relative to the store's prefix.
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: buildkitd-external-amd64
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+    ci-plane.io/arch: amd64
+spec:
+  refreshInterval: 1h
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: example-server-push
+      kind: ClusterSecretStore
+  selector:
+    secret:
+      name: buildkitd-external-amd64-tls
+  # conversionStrategy is the field the CRD defaults to None: written out, so
+  # the object Argo CD applies is the object the cluster stores.
+  data:
+    - conversionStrategy: None
+      match:
+        secretKey: tls.crt
+        remoteRef:
+          remoteKey: "amd64/cert"
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          description: 'BuildKit builder amd64: tls.crt, pushed by External Secrets'
+          kmsKeyID: alias/example-server
+          secretType: SecureString
+          tags:
+            component: ci
+    - conversionStrategy: None
+      match:
+        secretKey: tls.key
+        remoteRef:
+          remoteKey: "amd64/key"
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          description: 'BuildKit builder amd64: tls.key, pushed by External Secrets'
+          kmsKeyID: alias/example-server
+          secretType: SecureString
+          tags:
+            component: ci
+
+---
+# Source: ci-builders/templates/external-builders.yaml
+# The client CA certificate, the one authority the builders accept client
+# certificates from: ca.crt of buildkit-client-outside-tls, alone.
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: buildkitd-external-client-ca
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  refreshInterval: 1h
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: example-server-push
+      kind: ClusterSecretStore
+  selector:
+    secret:
+      name: buildkit-client-outside-tls
+  data:
+    - conversionStrategy: None
+      match:
+        secretKey: ca.crt
+        remoteRef:
+          remoteKey: "client-ca"
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          description: BuildKit builders' client CA certificate, pushed by External Secrets
+          kmsKeyID: alias/example-server
+          secretType: SecureString
+          tags:
+            component: ci

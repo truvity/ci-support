@@ -1,0 +1,9 @@
+# refuses: serverCertificate.dnsNames.amd64 is required
+buildkitd: {enabled: false}
+npmCache: {enabled: false}
+bazelRemote: {enabled: false}
+externalBuilders:
+  enabled: true
+  serverCertificate: {issuerRef: {name: example-private}, dnsNames: {arm64: [a.example.private]}}
+  clientCA: {secretName: x-tls}
+  push: {storeRef: {name: example-push}}
