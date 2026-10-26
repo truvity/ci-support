@@ -327,7 +327,7 @@ func TestKeyPolicyStatementMatchesTheRolesGrant(t *testing.T) {
 	}
 
 	cond := st["Condition"].(map[string]any)
-	if got := cond["ArnLike"].(map[string]any)["aws:PrincipalArn"]; got != "arn:"+part+":iam::"+testAccount+":role/"+a.Name {
+	if got := cond["ArnEquals"].(map[string]any)["aws:PrincipalArn"]; got != "arn:"+part+":iam::"+testAccount+":role/"+a.Name {
 		t.Errorf("principal %v", got)
 	}
 
