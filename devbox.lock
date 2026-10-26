@@ -2,8 +2,8 @@
   "lockfile_version": "1",
   "packages": {
     "github:NixOS/nixpkgs/nixpkgs-unstable": {
-      "last_modified": "2026-10-20T09:20:32Z",
-      "resolved": "github:NixOS/nixpkgs/e513db7b0a65def6f6e17bb55195dfe510871944?lastModified=1792488032"
+      "last_modified": "2026-10-24T03:22:33Z",
+      "resolved": "github:NixOS/nixpkgs/674a2028661e550a97400c1cc992b9cca9a668a1?lastModified=1792812153"
     },
     "go@1.27.0": {
       "last_modified": "2026-09-04T02:50:00Z",
@@ -82,8 +82,8 @@
       }
     },
     "just@1.58.0": {
-      "last_modified": "2026-10-20T14:23:57Z",
-      "resolved": "github:NixOS/nixpkgs/5adc50831c259f87faeb09ddf930d43597197473#just",
+      "last_modified": "2026-10-24T03:22:33Z",
+      "resolved": "github:NixOS/nixpkgs/674a2028661e550a97400c1cc992b9cca9a668a1#just",
       "source": "devbox-search",
       "version": "1.58.0",
       "systems": {
@@ -91,58 +91,58 @@
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/7rlrjsbixm61xsx5f1lgikf76b62zcyc-just-1.58.0",
+              "path": "/nix/store/2y1l8ipy3yjqsvvbdnvvwycr817in21n-just-1.58.0",
               "default": true
             },
             {
               "name": "man",
-              "path": "/nix/store/ali49hckk6hss0mydfdy4q6rbibzgya2-just-1.58.0-man",
+              "path": "/nix/store/n84z696sjag6gqn3vncd8wy03n4h5qxm-just-1.58.0-man",
               "default": true
             },
             {
               "name": "doc",
-              "path": "/nix/store/30vykm55gzxz6b8cgdz9pjkhnf64whfw-just-1.58.0-doc"
+              "path": "/nix/store/95jz1706pnrzb2c5fifxvppnn7sdv28p-just-1.58.0-doc"
             }
           ],
-          "store_path": "/nix/store/7rlrjsbixm61xsx5f1lgikf76b62zcyc-just-1.58.0"
+          "store_path": "/nix/store/2y1l8ipy3yjqsvvbdnvvwycr817in21n-just-1.58.0"
         },
         "aarch64-linux": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/c3bqllgbr339vd4z4kid5l5pb2nfznfm-just-1.58.0",
+              "path": "/nix/store/fgwvbiwrhwh36ivsfninc7j6xjdx96cx-just-1.58.0",
               "default": true
             },
             {
               "name": "man",
-              "path": "/nix/store/dgxf44xn4g495fcky1iqh1j8ayhaw39h-just-1.58.0-man",
+              "path": "/nix/store/kq06vzl29sizibbpvl23aalw9wkg809b-just-1.58.0-man",
               "default": true
             },
             {
               "name": "doc",
-              "path": "/nix/store/1zk2ac8idwvip721lgh8mcf0mvdpq71c-just-1.58.0-doc"
+              "path": "/nix/store/simb8rnliz4k3ypzzmxbrrkadmdwlr7a-just-1.58.0-doc"
             }
           ],
-          "store_path": "/nix/store/c3bqllgbr339vd4z4kid5l5pb2nfznfm-just-1.58.0"
+          "store_path": "/nix/store/fgwvbiwrhwh36ivsfninc7j6xjdx96cx-just-1.58.0"
         },
         "x86_64-linux": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/9m07v30f7xk2v8xmk4dw517shcvlil0r-just-1.58.0",
+              "path": "/nix/store/1sf33724ai5nydnck9ndwrd785faarsy-just-1.58.0",
               "default": true
             },
             {
               "name": "man",
-              "path": "/nix/store/xl0dca0pjfca50rxgdyks8kwwnbx9qc2-just-1.58.0-man",
+              "path": "/nix/store/rdzsgnas2yb26125nnd0ngmczlcy88zc-just-1.58.0-man",
               "default": true
             },
             {
               "name": "doc",
-              "path": "/nix/store/fmnk8gjhpl742nanpy46fd7ky70jrq30-just-1.58.0-doc"
+              "path": "/nix/store/9hq31bw00vv4b4wfiqchnnvvahyai3h3-just-1.58.0-doc"
             }
           ],
-          "store_path": "/nix/store/9m07v30f7xk2v8xmk4dw517shcvlil0r-just-1.58.0"
+          "store_path": "/nix/store/1sf33724ai5nydnck9ndwrd785faarsy-just-1.58.0"
         }
       }
     },
@@ -223,8 +223,8 @@
       }
     },
     "shellcheck@0.11.0": {
-      "last_modified": "2026-10-20T14:23:57Z",
-      "resolved": "github:NixOS/nixpkgs/5adc50831c259f87faeb09ddf930d43597197473#shellcheck",
+      "last_modified": "2026-10-24T03:22:33Z",
+      "resolved": "github:NixOS/nixpkgs/674a2028661e550a97400c1cc992b9cca9a668a1#shellcheck",
       "source": "devbox-search",
       "version": "0.11.0",
       "systems": {
@@ -232,49 +232,49 @@
           "outputs": [
             {
               "name": "bin",
-              "path": "/nix/store/ibp7m243z73kjgfkd1cx1b3nf0fnrfrd-shellcheck-0.11.0-bin",
+              "path": "/nix/store/7i826r202acdz8c2q6hsggy44s1rkk0k-shellcheck-0.11.0-bin",
               "default": true
             },
             {
               "name": "man",
-              "path": "/nix/store/353snb7h5nwwpp3n1faf3f906q24xcf5-shellcheck-0.11.0-man",
+              "path": "/nix/store/gkpvf3c676pj1fsix3vlmfx0g4k6g03b-shellcheck-0.11.0-man",
               "default": true
             },
             {
               "name": "doc",
-              "path": "/nix/store/pnk5c3k5vwlbqpr24wvl7aapwbwpdl8n-shellcheck-0.11.0-doc",
+              "path": "/nix/store/6849sr6y57157l7iyn3fr6za5b2x70rc-shellcheck-0.11.0-doc",
               "default": true
             },
             {
               "name": "out",
-              "path": "/nix/store/a88fmsifw0kaw2grlc13ks991r7g8g0k-shellcheck-0.11.0"
+              "path": "/nix/store/pv6dnksa3gm0yiqglxcy673iplac54m7-shellcheck-0.11.0"
             }
           ],
-          "store_path": "/nix/store/ibp7m243z73kjgfkd1cx1b3nf0fnrfrd-shellcheck-0.11.0-bin"
+          "store_path": "/nix/store/7i826r202acdz8c2q6hsggy44s1rkk0k-shellcheck-0.11.0-bin"
         },
         "aarch64-linux": {
           "outputs": [
             {
               "name": "bin",
-              "path": "/nix/store/8rscrrq1wyfi9i4xvb2fifapyjqq37z8-shellcheck-0.11.0-bin",
+              "path": "/nix/store/5q8w9c384fzl0fmk5gyrjbymh57msx76-shellcheck-0.11.0-bin",
               "default": true
             },
             {
               "name": "man",
-              "path": "/nix/store/zzzapk9zp8h2rfil0x9z6f1jw362jsna-shellcheck-0.11.0-man",
+              "path": "/nix/store/2f8cickl3cpa1v5is7cjfqh3hnddcm8h-shellcheck-0.11.0-man",
               "default": true
             },
             {
               "name": "doc",
-              "path": "/nix/store/cq44va0rafhbxz42f44mkajv27f4wh2m-shellcheck-0.11.0-doc",
+              "path": "/nix/store/ydn5j4l28igfr4w72p0366kgw66xyj7j-shellcheck-0.11.0-doc",
               "default": true
             },
             {
               "name": "out",
-              "path": "/nix/store/d2az91s503ycd56hh9wqsa4a8iais8nb-shellcheck-0.11.0"
+              "path": "/nix/store/14y502d9zwhxqq5b96yflz1w5gmc6wy8-shellcheck-0.11.0"
             }
           ],
-          "store_path": "/nix/store/8rscrrq1wyfi9i4xvb2fifapyjqq37z8-shellcheck-0.11.0-bin"
+          "store_path": "/nix/store/5q8w9c384fzl0fmk5gyrjbymh57msx76-shellcheck-0.11.0-bin"
         },
         "x86_64-darwin": {
           "outputs": [
@@ -304,25 +304,25 @@
           "outputs": [
             {
               "name": "bin",
-              "path": "/nix/store/v5lxnafjb5625mnnaf1gkr2z2zwqd0w3-shellcheck-0.11.0-bin",
+              "path": "/nix/store/dvgzys7ll0kbalprfyhbvlycvn1rmg6n-shellcheck-0.11.0-bin",
               "default": true
             },
             {
               "name": "man",
-              "path": "/nix/store/2pcaa9xcqlryrzv7rdks2fp29064ygng-shellcheck-0.11.0-man",
+              "path": "/nix/store/nsb0gqcw4axy94g3zn3sldvw8f8b61yf-shellcheck-0.11.0-man",
               "default": true
             },
             {
               "name": "doc",
-              "path": "/nix/store/az1xcxqhc223wzv7jblpaqisbghpkx7g-shellcheck-0.11.0-doc",
+              "path": "/nix/store/8pna0bm0zb8vzzfw6x2mzgq0ywr4v910-shellcheck-0.11.0-doc",
               "default": true
             },
             {
               "name": "out",
-              "path": "/nix/store/1m6yrgv04y6s02rnign5539i14xhs46m-shellcheck-0.11.0"
+              "path": "/nix/store/38p9s2fha91gr3zd9l6l3b7s6s1wv7s6-shellcheck-0.11.0"
             }
           ],
-          "store_path": "/nix/store/v5lxnafjb5625mnnaf1gkr2z2zwqd0w3-shellcheck-0.11.0-bin"
+          "store_path": "/nix/store/dvgzys7ll0kbalprfyhbvlycvn1rmg6n-shellcheck-0.11.0-bin"
         }
       }
     },
