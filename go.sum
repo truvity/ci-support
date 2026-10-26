@@ -203,8 +203,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/texttheater/golang-levenshtein v1.0.1 h1:+cRNoVrfiwufQPhoMzB6N0Yf/Mqajr6t1lOv8GyGE2U=
 github.com/texttheater/golang-levenshtein v1.0.1/go.mod h1:PYAKrbF5sAiq9wd+H82hs7gNaen0CplQ9uvm6+enD/8=
-github.com/truvity/asg v0.4.0 h1:bN8oanmexv2J6d6aM9KzlotQj17eVgIawT/oCWuwcOk=
-github.com/truvity/asg v0.4.0/go.mod h1:23UpABbNupncsrDZEVmOi7R02KSVutgpsOlnJkKKb/8=
+github.com/truvity/asg v0.4.2 h1:DhCYI8yj29pSZ2hHh7OZlh7/PkDRsxPI8xwMvgFlY9M=
+github.com/truvity/asg v0.4.2/go.mod h1:23UpABbNupncsrDZEVmOi7R02KSVutgpsOlnJkKKb/8=
 github.com/uber/jaeger-client-go v2.30.0+incompatible h1:D6wyKGCecFaSRUpo8lCVbaOOb6ThwMmTEbhRwtKR97o=
 github.com/uber/jaeger-client-go v2.30.0+incompatible/go.mod h1:WVhlPFC8FDjOFMMWRy2pZqQJSXxYSwNYOkTr/Z6d3Kk=
 github.com/uber/jaeger-lib v2.4.1+incompatible h1:td4jdvLcExb4cBISKIpHuGoVXh+dVKhn2Um6rjCsSsg=

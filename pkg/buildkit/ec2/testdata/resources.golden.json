@@ -49,6 +49,7 @@
         "subnet-0a",
         "subnet-0b"
       ],
+      "waitForCapacityTimeout": "0",
       "warmPool": {
         "instanceReusePolicy": {
           "reuseOnScaleIn": true
@@ -195,6 +196,7 @@
         "protocol": "TCP",
         "unhealthyThreshold": 3
       },
+      "name": "buildkit-arm64-0cb84f9",
       "port": 1234,
       "protocol": "TCP",
       "tags": {

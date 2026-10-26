@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/pulumi/pulumi-aws/sdk/v7 v7.48.0
 	github.com/pulumi/pulumi/sdk/v3 v3.264.0
-	github.com/truvity/asg v0.4.0
+	github.com/truvity/asg v0.4.2
 )
 
 require (

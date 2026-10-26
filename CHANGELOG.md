@@ -3,6 +3,11 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## v0.1.4
+
+- **Fixed: a BuildKit builder group no longer waits for capacity, so a long first boot cannot leave it without its warm pool.** Updates `github.com/truvity/asg` from v0.4.0 to v0.4.2. The builder groups have a launch hook, so a group is not InService until the first instance completes it, and that can take longer than the ten minutes the provider waits by default. The create then timed out after the group existed but before its warm pool was put, and the state recorded a pool that was never made: later updates did not create it either, so the group had no warm pool, silently. A group with a launch hook now has `WaitForCapacityTimeout` `"0"`; readiness is the hook's job. For an existing stack this is one in-place update of each group, no replacement. A stack that already lost its warm pool gets it back from a `pulumi refresh` followed by `pulumi up`.
+- **Also from asg v0.4.1: a `front` target group has a name that fits AWS's 32-character limit.** The builder's listener now names its target group from the listener's name cut to 24 characters and a hash of what replaces it, where the autoname could pass 32 and be refused at preview. Nothing deployed from earlier releases created a target group, so there is nothing to replace. The `pkg/buildkit/ec2` resources golden gains `waitForCapacityTimeout` and the target group `name`.
+
 ## v0.1.3
 
 - **Fixed: the BuildKit builders' cache volume is labelled `bkcache`.** `mkfs.xfs` refuses labels of more than 12 characters, so with `buildkit-cache` the first-boot script failed, the launch hook never completed, and no builder came into service. A test now holds the label to 12 characters.
