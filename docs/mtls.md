@@ -139,6 +139,42 @@ of expiry, the `PushSecret` pushes when the Secret changes and every
 client in flight keeps the one it read, which is the damage window of the
 runners' certificate as well. Set `refreshInterval` well under `renewBefore`.
 
+## Builders outside the cluster
+
+A builder on a machine of its own (`pkg/buildkit/ec2`, [buildkit-on-ec2.md](buildkit-on-ec2.md))
+cannot mount a Secret either. It reads its server certificate, its key and the
+client CA from a store the estate owns, and `externalBuilders` puts them
+there. It is independent of `buildkitd.enabled`, so a release may render it
+alone:
+
+- per architecture in `externalBuilders.archs`, a cert-manager `Certificate`
+  (`buildkitd-external-<arch>`, Secret `buildkitd-external-<arch>-tls`) for
+  `serverCertificate.dnsNames.<arch>`, from `serverCertificate.issuerRef`.
+  Give it the issuer of `buildkitd.mtls.serverCertificate`, and the names of
+  the in-cluster builders beside the machine's own, so a client verifies
+  either kind of builder against one CA bundle and one servername, and a
+  name can move from one to the other without a new certificate;
+- per architecture, a `PushSecret` that writes `tls.crt` (with its chain) and
+  `tls.key` as `<arch>/<push.names.cert>` and `<arch>/<push.names.key>`;
+- one `PushSecret` that writes the client CA certificate as
+  `push.names.clientCA`.
+
+The client CA is read from `clientCA.secretName`, a Secret in the release
+namespace, key `clientCA.key` (`ca.crt`). A `PushSecret` reads only Secrets,
+and only those of its own namespace: the CA's own Secret is in
+`buildkitd.mtls.clientCA.namespace`, and the trust-manager `Bundle` publishes a
+ConfigMap. Every certificate the client CA issues carries it in `ca.crt`, so
+the Secret of an external client (`buildkit-client-<name>-tls`) is such a
+Secret, and the Secret of the client that dials these builders is the
+closest choice: what the machines trust is then by construction the issuer of
+that client's certificate. Only `clientCA.key` is pushed from it, never its
+pair.
+
+Renewal: cert-manager renews `renewBefore` ahead of expiry, the `PushSecret`
+pushes on the change and every `refreshInterval`, and the machine picks the
+new parameter version up in its nightly rotation. Nothing is deleted from the
+store when an object goes (`deletionPolicy: None`).
+
 ## What this does not do
 
 Per-job certificates (federated identity, a short-lived client certificate

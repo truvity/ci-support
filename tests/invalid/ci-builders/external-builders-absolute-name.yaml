@@ -1,0 +1,9 @@
+# refuses: must be a relative parameter path
+buildkitd: {enabled: false}
+npmCache: {enabled: false}
+bazelRemote: {enabled: false}
+externalBuilders:
+  enabled: true
+  serverCertificate: {issuerRef: {name: example-private}, dnsNames: {arm64: [a.example.private], amd64: [b.example.private]}}
+  clientCA: {secretName: x-tls}
+  push: {storeRef: {name: example-push}, names: {clientCA: /ci/client-ca}}

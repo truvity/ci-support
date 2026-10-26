@@ -1,0 +1,7 @@
+# refuses: serverCertificates
+buildkitd: {enabled: false}
+npmCache: {enabled: false}
+bazelRemote: {enabled: false}
+externalBuilders:
+  enabled: true
+  serverCertificates: {}

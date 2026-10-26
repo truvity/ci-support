@@ -1,0 +1,26 @@
+# The TLS material of builders outside the cluster, rendered by a release of
+# its own: every in-cluster component off. Per arch a server Certificate and
+# the PushSecret of its pair; one PushSecret of the client CA certificate,
+# read from an external client's Secret (which another release renders).
+buildkitd:
+  enabled: false
+npmCache:
+  enabled: false
+bazelRemote:
+  enabled: false
+externalBuilders:
+  enabled: true
+  serverCertificate:
+    issuerRef:
+      name: example-private
+    dnsNames:
+      arm64: [arm64.machines.example.private, arm64.builders.example.private, builders.example.private]
+      amd64: [amd64.machines.example.private, amd64.builders.example.private, builders.example.private]
+  clientCA:
+    secretName: buildkit-client-outside-tls
+  push:
+    storeRef:
+      name: example-server-push
+    kmsKeyId: alias/example-server
+    tags:
+      component: ci

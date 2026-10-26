@@ -307,3 +307,58 @@ func TestRefusals(t *testing.T) {
 		}
 	}
 }
+
+// The key's statement for a builder names the role New creates and the
+// three parameters the role's own grant names, and nothing else.
+func TestKeyPolicyStatementMatchesTheRolesGrant(t *testing.T) {
+	a := args()
+
+	st, err := ec2.KeyPolicyStatement(part, testRegion, testAccount, a.Name, a.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if st["Sid"] != "BuilderDevelBuildkitArm64DecryptsItsCertificate" || st["Effect"] != "Allow" {
+		t.Errorf("sid/effect %v %v", st["Sid"], st["Effect"])
+	}
+
+	if acts := st["Action"].([]string); len(acts) != 1 || acts[0] != "kms:Decrypt" {
+		t.Errorf("actions %v: the builder only decrypts", acts)
+	}
+
+	cond := st["Condition"].(map[string]any)
+	if got := cond["ArnLike"].(map[string]any)["aws:PrincipalArn"]; got != "arn:"+part+":iam::"+testAccount+":role/"+a.Name {
+		t.Errorf("principal %v", got)
+	}
+
+	eq := cond["StringEquals"].(map[string]any)
+	if eq["kms:ViaService"] != "ssm."+testRegion+".amazonaws.com" {
+		t.Errorf("via %v", eq["kms:ViaService"])
+	}
+
+	rec, _, err := run(t, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pol := rec.find(t, "aws:iam/role:Role", "buildkit-arm64")["inlinePolicies"].([]any)[0].(map[string]any)["policy"].(string)
+
+	params := eq["kms:EncryptionContext:PARAMETER_ARN"].([]string)
+	if len(params) != 3 {
+		t.Fatalf("parameters %v", params)
+	}
+
+	for _, p := range params {
+		if !strings.Contains(pol, `"`+p+`"`) {
+			t.Errorf("the key admits %s, which the role's own grant does not name", p)
+		}
+	}
+
+	if _, err := ec2.KeyPolicyStatement(part, testRegion, testAccount, "Devel_Buildkit", a.Certificate); err == nil {
+		t.Error("accepted a name New refuses")
+	}
+
+	if _, err := ec2.KeyPolicyStatement(part, testRegion, testAccount, a.Name, ec2.Certificate{Cert: "/x"}); err == nil {
+		t.Error("accepted a certificate without its key and client CA")
+	}
+}

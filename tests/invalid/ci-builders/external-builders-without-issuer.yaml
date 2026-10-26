@@ -1,0 +1,9 @@
+# refuses: serverCertificate.issuerRef.name is required
+buildkitd: {enabled: false}
+npmCache: {enabled: false}
+bazelRemote: {enabled: false}
+externalBuilders:
+  enabled: true
+  serverCertificate: {dnsNames: {arm64: [a.example.private], amd64: [b.example.private]}}
+  clientCA: {secretName: x-tls}
+  push: {storeRef: {name: example-push}}

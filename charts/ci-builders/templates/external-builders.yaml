@@ -1,0 +1,140 @@
+{{- /*
+The TLS material of BuildKit builders that run OUTSIDE this cluster, on
+machines of their own (pkg/buildkit/ec2), which read it from a store the
+estate owns (Parameter Store, for one) instead of mounting a Secret. The
+chart issues it here and pushes it there; it never runs those builders.
+
+  - per architecture, a cert-manager Certificate for the names clients dial,
+    from the estate's issuer (the same issuer as the in-cluster builders'
+    serverCertificate, so a client verifies either kind of builder against
+    one CA bundle), and a PushSecret that writes tls.crt and tls.key as
+    <arch>/<names.cert> and <arch>/<names.key>;
+  - one PushSecret that writes the client CA certificate as names.clientCA:
+    the one authority the builders accept client certificates from.
+
+The client CA comes from clientCA.secretName, a Secret in the release
+namespace whose clientCA.key holds the CA certificate. A PushSecret reads
+Secrets only, and only from its own namespace: the CA's own Secret is in
+cert-manager's namespace, and the trust-manager Bundle publishes it as a
+ConfigMap. Every certificate the client CA issues carries that CA in ca.crt,
+so the Secret of an external client (buildkitd.mtls.clientCA.externalClients)
+is such a Secret, and the one the runners present is the closest: what is
+pushed is then by construction the issuer of the runners' certificates. Only
+clientCA.key is pushed from it, never its pair.
+
+Renewal needs no human: cert-manager renews renewBefore ahead of expiry, the
+PushSecret pushes on the change and every refreshInterval, and the machine
+picks the new version up (pkg/buildkit/ec2 rotates nightly). Nothing is
+deleted from the store when an object goes (deletionPolicy None).
+*/ -}}
+{{- $x := .Values.externalBuilders }}
+{{- if $x.enabled }}
+{{- $cert := $x.serverCertificate }}
+{{- $push := $x.push }}
+{{- $names := $push.names }}
+{{- if not $cert.issuerRef.name }}{{ fail "externalBuilders.serverCertificate.issuerRef.name is required: the issuer of the builders' server certificates" }}{{ end }}
+{{- if not $x.archs }}{{ fail "externalBuilders.archs is required and non-empty" }}{{ end }}
+{{- if not (dig "storeRef" "name" "" $push) }}{{ fail "externalBuilders.push.storeRef.name is required: the store the machines read from" }}{{ end }}
+{{- if not $x.clientCA.secretName }}{{ fail "externalBuilders.clientCA.secretName is required: a Secret in the release namespace whose clientCA.key is the client CA certificate (an external client's Secret is one)" }}{{ end }}
+{{- range $k := list "cert" "key" "clientCA" }}
+{{- if not (regexMatch "^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$" (get $names $k | default "")) }}{{ fail (printf "externalBuilders.push.names.%s %q must be a relative parameter path (letters, digits, '_', '.', '-', and '/' between segments)" $k (get $names $k | default "")) }}{{ end }}
+{{- end }}
+{{- $meta := dict "secretType" ($push.secretType | default "SecureString") }}
+{{- if $push.kmsKeyId }}{{ $_ := set $meta "kmsKeyID" $push.kmsKeyId }}{{ end }}
+{{- if $push.tags }}{{ $_ := set $meta "tags" $push.tags }}{{ end }}
+{{- range $arch := $x.archs }}
+{{- $dns := get ($cert.dnsNames | default dict) $arch | default list }}
+{{- if not $dns }}{{ fail (printf "externalBuilders.serverCertificate.dnsNames.%s is required and non-empty: the names clients dial" $arch) }}{{ end }}
+{{- $secret := printf "buildkitd-external-%s-tls" $arch }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: buildkitd-external-{{ $arch }}
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+    ci-plane.io/arch: {{ $arch }}
+spec:
+  secretName: {{ $secret }}
+  commonName: {{ first $dns | quote }}
+  dnsNames:
+    {{- toYaml $dns | nindent 4 }}
+  {{- /* No usages, as the in-cluster serverCertificate: an issuer whose
+         approver policy lists none denies a request that names any. */}}
+  duration: {{ $cert.duration }}
+  renewBefore: {{ $cert.renewBefore }}
+  privateKey:
+    {{- toYaml $cert.privateKey | nindent 4 }}
+    rotationPolicy: Always
+  issuerRef:
+    {{- toYaml $cert.issuerRef | nindent 4 }}
+---
+# The {{ $arch }} builder's certificate (with its chain) and key, each to its
+# own parameter, relative to the store's prefix.
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: buildkitd-external-{{ $arch }}
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+    ci-plane.io/arch: {{ $arch }}
+spec:
+  refreshInterval: {{ $push.refreshInterval }}
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: {{ $push.storeRef.name }}
+      kind: {{ $push.storeRef.kind | default "ClusterSecretStore" }}
+  selector:
+    secret:
+      name: {{ $secret }}
+  # conversionStrategy is the field the CRD defaults to None: written out, so
+  # the object Argo CD applies is the object the cluster stores.
+  data:
+    {{- range $key, $remote := dict "tls.crt" (printf "%s/%s" $arch $names.cert) "tls.key" (printf "%s/%s" $arch $names.key) }}
+    - conversionStrategy: None
+      match:
+        secretKey: {{ $key }}
+        remoteRef:
+          remoteKey: {{ $remote | quote }}
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          {{- toYaml (merge (dict "description" (printf "BuildKit builder %s: %s, pushed by External Secrets" $arch $key)) $meta) | nindent 10 }}
+    {{- end }}
+{{- end }}
+---
+# The client CA certificate, the one authority the builders accept client
+# certificates from: {{ $x.clientCA.key }} of {{ $x.clientCA.secretName }}, alone.
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: buildkitd-external-client-ca
+  labels:
+    app.kubernetes.io/name: buildkitd-external
+    app.kubernetes.io/part-of: ci-builders
+spec:
+  refreshInterval: {{ $push.refreshInterval }}
+  updatePolicy: Replace
+  deletionPolicy: None
+  secretStoreRefs:
+    - name: {{ $push.storeRef.name }}
+      kind: {{ $push.storeRef.kind | default "ClusterSecretStore" }}
+  selector:
+    secret:
+      name: {{ $x.clientCA.secretName }}
+  data:
+    - conversionStrategy: None
+      match:
+        secretKey: {{ $x.clientCA.key }}
+        remoteRef:
+          remoteKey: {{ $names.clientCA | quote }}
+      metadata:
+        apiVersion: kubernetes.external-secrets.io/v1alpha1
+        kind: PushSecretMetadata
+        spec:
+          {{- toYaml (merge (dict "description" "BuildKit builders' client CA certificate, pushed by External Secrets") $meta) | nindent 10 }}
+{{- end }}
