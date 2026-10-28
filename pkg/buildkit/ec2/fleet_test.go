@@ -13,8 +13,8 @@ func one(b ec2.FleetBuilder) map[string]ec2.FleetBuilder {
 	return map[string]ec2.FleetBuilder{"arm64": b}
 }
 
-func sized(max int) ec2.FleetBuilder {
-	return fb{Listener: "l", InstanceType: "m7g.xlarge", MaxParallelism: 1, MaxSize: max}
+func sized(size int) ec2.FleetBuilder {
+	return fb{Listener: "l", InstanceType: "m7g.xlarge", MaxParallelism: 1, MaxSize: size}
 }
 
 func withZone(b ec2.FleetBuilder) ec2.FleetBuilder { b.Zone = "eu-central-1a"; return b }
