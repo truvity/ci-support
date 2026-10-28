@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v0.3.0
 
 - **New `ec2.Fleet` and `Fleet.Validate` (`pkg/buildkit/ec2`): the builders' shape rules, checkable before any resource exists.** A caller that keeps its builders in a configuration file maps it to `Fleet` / `FleetProxy` / `FleetBuilder` (plain values, no provider inputs) and calls `Validate`, which reports every problem at once: the mode (`group` or `on-demand`), a proxy and a legacy group only on demand, the proxy's and each builder's instance type, an architecture of amd64 or arm64, a listener and `max_parallelism` of at least 1, a zone and non-negative data volume for on-demand builders only, a group `max_size` of 0 or at least `ec2.MinMaxSize`, and no listener shared between a legacy group builder and an on-demand one. `Fleet.Archs` / `LegacyArchs` list the architectures sorted.
 
