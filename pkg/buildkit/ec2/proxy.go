@@ -20,7 +20,7 @@ import (
 const (
 	// WakeProxyVersion is the truvity/asg release whose cmd/wake-proxy build
 	// the proxy installs (the module version in go.mod moves with it).
-	WakeProxyVersion = "v0.6.0"
+	WakeProxyVersion = "v0.8.0"
 
 	DefaultProxyInstanceType = "t4g.nano"
 	DefaultProxyArch         = "arm64"
@@ -40,8 +40,8 @@ const (
 // WakeProxyVersion (the release's checksums.txt). A bump is by hand with the
 // version, like the pinned BuildKit releases.
 var WakeProxySHA256 = map[string]string{
-	"amd64": "c4f3ba03ee1a25b4345bcdd7ee10efcfb0a8fc41b62fc281f0d83115b15ba796",
-	"arm64": "1e2b7ead86031d3ca7f63fd37207ccc40e9f4a9601bac62f31a8a5694bec6001",
+	"amd64": "a2502f8d53c2c7bd3d2b7580027cfda95dcd39815f188a26d715915d6c0f6d58",
+	"arm64": "ce138e93e0bd4a0b62bcf9935540c3285bddbdccfad03e3e66e3d2bb5b329f8e",
 }
 
 type (

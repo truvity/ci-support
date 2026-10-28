@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+- **Updated: the on-demand BuildKit wake proxy is truvity/asg v0.8.0 (was v0.6.0): a TCP health probe no longer wakes the builder.** `ec2.WakeProxyVersion` and `ec2.WakeProxySHA256` follow the release, and `github.com/truvity/asg` moves to v0.8.0. The proxy now wakes a builder on the client's first byte instead of on connect (per-route `wakeOn`, default `data`; `firstByteTimeout`, default 30 s; the binary fills both itself). BuildKit clients speak first (TLS), so the routes keep the default and a build wakes the builder as before, while a bare connect, such as a load balancer's or a monitor's TCP probe, leaves it stopped. The `proxy.userdata.golden.yaml` golden gains the new pinned URL and digest.
+
 ## v0.3.0
 
 - **New `ec2.Fleet` and `Fleet.Validate` (`pkg/buildkit/ec2`): the builders' shape rules, checkable before any resource exists.** A caller that keeps its builders in a configuration file maps it to `Fleet` / `FleetProxy` / `FleetBuilder` (plain values, no provider inputs) and calls `Validate`, which reports every problem at once: the mode (`group` or `on-demand`), a proxy and a legacy group only on demand, the proxy's and each builder's instance type, an architecture of amd64 or arm64, a listener and `max_parallelism` of at least 1, a zone and non-negative data volume for on-demand builders only, a group `max_size` of 0 or at least `ec2.MinMaxSize`, and no listener shared between a legacy group builder and an on-demand one. `Fleet.Archs` / `LegacyArchs` list the architectures sorted.
