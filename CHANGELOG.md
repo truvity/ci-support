@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+- **New Go package `pkg/cachegrant`: the IAM documents that let a CI task role use the shared caches.** `TaskRole.Statements` is the identity policy (the cache bucket's list limited to the given key prefixes, objects read, written and multipart-managed but never deleted, the registry authorization token, push and pull of the one BuildKit cache repository); `RepositoryPolicy` is the repository policy that admits a roles pattern of another account to that repository; `BuildkitPushPull`, `BucketARN` and `RepositoryARN` are the shared pieces. Plain maps, no provider; ARNs are built at run time.
+
 ## v0.2.0
 
 - **New: `pkg/buildkit/ec2` on-demand builders (`Args.Mode: ec2.ModeOnDemand`) behind a wake proxy (`ec2.NewProxy`).** Updates `github.com/truvity/asg` from v0.4.2 to v0.6.0. A builder is one plain EC2 instance (`asg.Args.Single`; its run state is not Pulumi's) with a persistent encrypted 100 GiB gp3 cache volume (`asg.Args.Data`, in `OnDemand.Zone`, protected and retained on delete) mounted by asg's `datavolume` module at the daemon's state directory, so the cache survives stops, starts and image or user-data upgrades. The always-on proxy is asg's `cmd/wake-proxy` (v0.6.0, binary and sha256 pinned in `ec2.WakeProxyVersion` / `ec2.WakeProxySHA256`) on a `t4g.nano`-class appliance in the group mode (desired 1, one stopped warm-pool spare, launch hook, ELB health); it owns the shared NLB's listeners and target groups (TCP, idle timeout 3600 s, above the 180 s wake timeout; HTTP health check `/healthz`), starts the builder it finds by the `role` tag when a client connects, holds the connection until the daemon answers, pipes the TCP stream through (mutual TLS stays end to end) and stops the builder after 20 idle minutes. The builder's security group admits the proxy's group on 1234 only. The proxy's role is `wakeproxy.Statements` plus the volumes' KMS key when it is customer-managed.
