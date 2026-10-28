@@ -1,0 +1,323 @@
+[
+  {
+    "inputs": {
+      "desiredCapacity": 1,
+      "healthCheckGracePeriod": 300,
+      "healthCheckType": "ELB",
+      "initialLifecycleHooks": [
+        {
+          "defaultResult": "ABANDON",
+          "heartbeatTimeout": 600,
+          "lifecycleTransition": "autoscaling:EC2_INSTANCE_LAUNCHING",
+          "name": "devel-buildkit-proxy-launch"
+        }
+      ],
+      "instanceRefresh": {
+        "preferences": {
+          "instanceWarmup": "300",
+          "maxHealthyPercentage": 200,
+          "minHealthyPercentage": 100
+        },
+        "strategy": "Rolling"
+      },
+      "launchTemplate": {
+        "id": "buildkit-proxy_id",
+        "version": "1"
+      },
+      "maxSize": 2,
+      "minSize": 1,
+      "name": "devel-buildkit-proxy",
+      "tags": [
+        {
+          "key": "Name",
+          "propagateAtLaunch": true,
+          "value": "devel-buildkit-proxy"
+        },
+        {
+          "key": "ManagedBy",
+          "propagateAtLaunch": true,
+          "value": "pulumi"
+        }
+      ],
+      "targetGroupArns": [
+        "arn:@PARTITION@:elasticloadbalancing:eu-west-1:@ACCOUNT@:buildkit-proxy-buildkit-arm64",
+        "arn:@PARTITION@:elasticloadbalancing:eu-west-1:@ACCOUNT@:buildkit-proxy-buildkit-amd64"
+      ],
+      "vpcZoneIdentifiers": [
+        "subnet-0a",
+        "subnet-0b"
+      ],
+      "waitForCapacityTimeout": "0",
+      "warmPool": {
+        "instanceReusePolicy": {
+          "reuseOnScaleIn": true
+        },
+        "minSize": 1,
+        "poolState": "Stopped"
+      }
+    },
+    "name": "buildkit-proxy",
+    "type": "aws:autoscaling/group:Group"
+  },
+  {
+    "inputs": {
+      "blockDeviceMappings": [
+        {
+          "deviceName": "/dev/xvda",
+          "ebs": {
+            "deleteOnTermination": "true",
+            "encrypted": "true",
+            "volumeSize": 20,
+            "volumeType": "gp3"
+          }
+        }
+      ],
+      "iamInstanceProfile": {
+        "arn": ""
+      },
+      "imageId": "ami-0example",
+      "instanceType": "t4g.nano",
+      "metadataOptions": {
+        "httpEndpoint": "enabled",
+        "httpPutResponseHopLimit": 1,
+        "httpTokens": "required"
+      },
+      "name": "devel-buildkit-proxy",
+      "tagSpecifications": [
+        {
+          "resourceType": "instance",
+          "tags": {
+            "ManagedBy": "pulumi",
+            "Name": "devel-buildkit-proxy"
+          }
+        },
+        {
+          "resourceType": "volume",
+          "tags": {
+            "ManagedBy": "pulumi",
+            "Name": "devel-buildkit-proxy"
+          }
+        }
+      ],
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-proxy"
+      },
+      "updateDefaultVersion": true,
+      "userData": "\u003cuser-data\u003e",
+      "vpcSecurityGroupIds": [
+        "buildkit-proxy_id"
+      ]
+    },
+    "name": "buildkit-proxy",
+    "type": "aws:ec2/launchTemplate:LaunchTemplate"
+  },
+  {
+    "inputs": {
+      "description": "devel-buildkit-proxy BuildKit wake proxy",
+      "namePrefix": "devel-buildkit-proxy-",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-proxy"
+      },
+      "vpcId": "vpc-0example"
+    },
+    "name": "buildkit-proxy",
+    "type": "aws:ec2/securityGroup:SecurityGroup"
+  },
+  {
+    "inputs": {
+      "name": "devel-buildkit-proxy",
+      "role": "devel-buildkit-proxy",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-proxy"
+      }
+    },
+    "name": "buildkit-proxy",
+    "type": "aws:iam/instanceProfile:InstanceProfile"
+  },
+  {
+    "inputs": {
+      "assumeRolePolicy": "{\n  \"Statement\": [\n    {\n      \"Action\": \"sts:AssumeRole\",\n      \"Effect\": \"Allow\",\n      \"Principal\": {\n        \"Service\": \"ec2.amazonaws.com\"\n      }\n    }\n  ],\n  \"Version\": \"2012-10-17\"\n}",
+      "inlinePolicies": [
+        {
+          "name": "appliance",
+          "policy": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Sid\": \"OwnGroup\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"autoscaling:CompleteLifecycleAction\",\n        \"autoscaling:SetInstanceHealth\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:autoscaling:eu-west-1:@ACCOUNT@:autoScalingGroup:*:autoScalingGroupName/devel-buildkit-proxy\"\n      ]\n    },\n    {\n      \"Sid\": \"DescribeInstances\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ec2:DescribeInstances\"\n      ],\n      \"Resource\": [\n        \"*\"\n      ]\n    },\n    {\n      \"Sid\": \"StartStopTargets1\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ec2:StartInstances\",\n        \"ec2:StopInstances\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*\"\n      ],\n      \"Condition\": {\n        \"StringEquals\": {\n          \"aws:ResourceTag/role\": [\n            \"devel-buildkit-amd64\"\n          ]\n        }\n      }\n    },\n    {\n      \"Sid\": \"TagActivity1\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ec2:CreateTags\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*\"\n      ],\n      \"Condition\": {\n        \"ForAllValues:StringEquals\": {\n          \"aws:TagKeys\": [\n            \"wake-proxy/last-active\"\n          ]\n        },\n        \"StringEquals\": {\n          \"aws:ResourceTag/role\": [\n            \"devel-buildkit-amd64\"\n          ]\n        }\n      }\n    },\n    {\n      \"Sid\": \"StartStopTargets2\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ec2:StartInstances\",\n        \"ec2:StopInstances\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*\"\n      ],\n      \"Condition\": {\n        \"StringEquals\": {\n          \"aws:ResourceTag/role\": [\n            \"devel-buildkit-arm64\"\n          ]\n        }\n      }\n    },\n    {\n      \"Sid\": \"TagActivity2\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ec2:CreateTags\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*\"\n      ],\n      \"Condition\": {\n        \"ForAllValues:StringEquals\": {\n          \"aws:TagKeys\": [\n            \"wake-proxy/last-active\"\n          ]\n        },\n        \"StringEquals\": {\n          \"aws:ResourceTag/role\": [\n            \"devel-buildkit-arm64\"\n          ]\n        }\n      }\n    },\n    {\n      \"Sid\": \"UseTargetVolumeKeys\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"kms:Decrypt\",\n        \"kms:GenerateDataKeyWithoutPlaintext\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/0example-key\"\n      ]\n    },\n    {\n      \"Sid\": \"GrantTargetVolumeKeys\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"kms:CreateGrant\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/0example-key\"\n      ],\n      \"Condition\": {\n        \"Bool\": {\n          \"kms:GrantIsForAWSResource\": [\n            \"true\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+        }
+      ],
+      "name": "devel-buildkit-proxy",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-proxy"
+      }
+    },
+    "name": "buildkit-proxy",
+    "type": "aws:iam/role:Role"
+  },
+  {
+    "inputs": {
+      "defaultActions": [
+        {
+          "targetGroupArn": "arn:@PARTITION@:elasticloadbalancing:eu-west-1:@ACCOUNT@:buildkit-proxy-buildkit-amd64",
+          "type": "forward"
+        }
+      ],
+      "loadBalancerArn": "arn:@PARTITION@:elasticloadbalancing:eu-west-1:@ACCOUNT@:loadbalancer/net/box-front/0example",
+      "port": 1236,
+      "protocol": "TCP",
+      "tags": {
+        "Name": "buildkit-amd64"
+      },
+      "tcpIdleTimeoutSeconds": 3600
+    },
+    "name": "buildkit-proxy-buildkit-amd64",
+    "type": "aws:lb/listener:Listener"
+  },
+  {
+    "inputs": {
+      "defaultActions": [
+        {
+          "targetGroupArn": "arn:@PARTITION@:elasticloadbalancing:eu-west-1:@ACCOUNT@:buildkit-proxy-buildkit-arm64",
+          "type": "forward"
+        }
+      ],
+      "loadBalancerArn": "arn:@PARTITION@:elasticloadbalancing:eu-west-1:@ACCOUNT@:loadbalancer/net/box-front/0example",
+      "port": 1235,
+      "protocol": "TCP",
+      "tags": {
+        "Name": "buildkit-arm64"
+      },
+      "tcpIdleTimeoutSeconds": 3600
+    },
+    "name": "buildkit-proxy-buildkit-arm64",
+    "type": "aws:lb/listener:Listener"
+  },
+  {
+    "inputs": {
+      "deregistrationDelay": 900,
+      "healthCheck": {
+        "enabled": true,
+        "healthyThreshold": 3,
+        "interval": 10,
+        "path": "/healthz",
+        "port": "8080",
+        "protocol": "HTTP",
+        "unhealthyThreshold": 3
+      },
+      "name": "buildkit-amd64-8c22ef6",
+      "port": 1236,
+      "protocol": "TCP",
+      "tags": {
+        "Name": "buildkit-amd64"
+      },
+      "targetType": "instance",
+      "vpcId": "vpc-0example"
+    },
+    "name": "buildkit-proxy-buildkit-amd64",
+    "type": "aws:lb/targetGroup:TargetGroup"
+  },
+  {
+    "inputs": {
+      "deregistrationDelay": 900,
+      "healthCheck": {
+        "enabled": true,
+        "healthyThreshold": 3,
+        "interval": 10,
+        "path": "/healthz",
+        "port": "8080",
+        "protocol": "HTTP",
+        "unhealthyThreshold": 3
+      },
+      "name": "buildkit-arm64-27718db",
+      "port": 1235,
+      "protocol": "TCP",
+      "tags": {
+        "Name": "buildkit-arm64"
+      },
+      "targetType": "instance",
+      "vpcId": "vpc-0example"
+    },
+    "name": "buildkit-proxy-buildkit-arm64",
+    "type": "aws:lb/targetGroup:TargetGroup"
+  },
+  {
+    "inputs": {
+      "cidrIpv4": "0.0.0.0/0",
+      "ipProtocol": "-1",
+      "securityGroupId": "buildkit-proxy_id"
+    },
+    "name": "buildkit-proxy-egress-0",
+    "type": "aws:vpc/securityGroupEgressRule:SecurityGroupEgressRule"
+  },
+  {
+    "inputs": {
+      "description": "the runners",
+      "fromPort": 1236,
+      "ipProtocol": "tcp",
+      "referencedSecurityGroupId": "sg-0runners",
+      "securityGroupId": "sg-0front",
+      "toPort": 1236
+    },
+    "name": "buildkit-proxy-buildkit-amd64-in-0-tcp",
+    "type": "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule"
+  },
+  {
+    "inputs": {
+      "description": "the runners",
+      "fromPort": 1235,
+      "ipProtocol": "tcp",
+      "referencedSecurityGroupId": "sg-0runners",
+      "securityGroupId": "sg-0front",
+      "toPort": 1235
+    },
+    "name": "buildkit-proxy-buildkit-arm64-in-0-tcp",
+    "type": "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule"
+  },
+  {
+    "inputs": {
+      "description": "Traffic of buildkit-arm64 from the box front",
+      "fromPort": 1235,
+      "ipProtocol": "tcp",
+      "referencedSecurityGroupId": "sg-0front",
+      "securityGroupId": "buildkit-proxy_id",
+      "toPort": 1235
+    },
+    "name": "buildkit-proxy-ingress-0",
+    "type": "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule"
+  },
+  {
+    "inputs": {
+      "description": "Health check of buildkit-arm64 from the box front",
+      "fromPort": 8080,
+      "ipProtocol": "tcp",
+      "referencedSecurityGroupId": "sg-0front",
+      "securityGroupId": "buildkit-proxy_id",
+      "toPort": 8080
+    },
+    "name": "buildkit-proxy-ingress-1",
+    "type": "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule"
+  },
+  {
+    "inputs": {
+      "description": "Traffic of buildkit-amd64 from the box front",
+      "fromPort": 1236,
+      "ipProtocol": "tcp",
+      "referencedSecurityGroupId": "sg-0front",
+      "securityGroupId": "buildkit-proxy_id",
+      "toPort": 1236
+    },
+    "name": "buildkit-proxy-ingress-2",
+    "type": "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule"
+  },
+  {
+    "inputs": {},
+    "name": "buildkit-proxy",
+    "type": "truvity:asg:Box"
+  },
+  {
+    "inputs": {},
+    "name": "buildkit-proxy",
+    "type": "truvity:asg:Front"
+  }
+]

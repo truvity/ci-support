@@ -162,3 +162,36 @@ func TestCacheLabelFitsXFS(t *testing.T) {
 		t.Errorf("CacheLabel %q is %d characters; xfs allows 12", buildkit.CacheLabel, n)
 	}
 }
+
+func TestOnDemandHasNoLifecycle(t *testing.T) {
+	c := config()
+	c.OnDemand = true
+	c.CacheDevice = ""
+	c.BootUnits = []string{"buildkit-cert.service"}
+
+	got, err := buildkit.New(c).Contribute()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.InService)+len(got.ReadyChecks) != 0 {
+		t.Errorf("an on-demand daemon completes no launch hook: %v %v", got.InService, got.ReadyChecks)
+	}
+
+	unit := c.UnitText()
+	for _, want := range []string{"WantedBy=multi-user.target", "Requires=buildkit-imds-guard.service buildkit-cert.service", "ExecStartPre=+/usr/bin/chown"} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("unit lacks %q:\n%s", want, unit)
+		}
+	}
+
+	if strings.Contains(unit, "RequiresMountsFor") {
+		t.Error("the data volume module orders the mount, not RequiresMountsFor")
+	}
+
+	// The group mode is untouched.
+	g := config()
+	if strings.Contains(g.UnitText(), "[Install]") {
+		t.Error("the group's unit gained an [Install] section")
+	}
+}

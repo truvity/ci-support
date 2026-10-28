@@ -29,6 +29,23 @@
 //
 // The one grant that is the builder's own: kms:Decrypt of the certificate
 // parameters' key, through SSM, for those parameters only.
+//
+// # On demand
+//
+// Args.Mode ModeOnDemand is the other shape of the same builder: ONE plain
+// instance (asg Args.Single) that is stopped when nobody builds, with its
+// cache on a persistent encrypted data volume (asg Args.Data, mounted by the
+// datavolume module at the daemon's state directory), and a wake proxy
+// ([NewProxy], asg's cmd/wake-proxy) that owns its run state: it starts the
+// instance when a client connects, holds the connection until the daemon
+// answers, pipes the TCP stream through (mutual TLS stays end to end) and
+// stops the instance after 20 minutes without a connection. The shared NLB's
+// listeners and target groups then belong to the proxy, not to the builders.
+//
+// A single instance has no launch lifecycle, so what depended on one is
+// replaced (docs/buildkit-on-ec2.md, "On demand"): the certificate is fetched
+// on every boot and rotated in place when idle; the group watchdog, the
+// Standby rotation, the ready gate and the launch hook are dropped.
 package ec2
 
 import (
@@ -74,9 +91,30 @@ var imageParameters = map[string]string{
 	"arm64": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64",
 }
 
+// Mode says how a builder runs.
+type Mode string
+
+const (
+	// ModeGroup (the default) is an Auto Scaling group with a warm pool
+	// behind a listener of the shared NLB.
+	ModeGroup Mode = "group"
+	// ModeOnDemand is one plain instance with a persistent cache volume,
+	// started and stopped by a wake proxy (see [NewProxy] and the package
+	// documentation).
+	ModeOnDemand Mode = "on-demand"
+)
+
 type (
 	// Args configure one builder (one architecture).
 	Args struct {
+		// Mode is ModeGroup (default) or ModeOnDemand. OnDemand holds the
+		// settings of the second; the fields of the group mode that mean
+		// nothing there (Min, Max, Desired, WarmPoolSize, SubnetIDs, NLB,
+		// Listener, Sources, CacheVolumeGiB, Watchdog) are refused when set.
+		Mode Mode
+		// OnDemand is required with ModeOnDemand and refused otherwise.
+		OnDemand *OnDemandArgs
+
 		// Arch is amd64 or arm64. Required.
 		Arch string
 		// Name is the physical name of the group, its launch template, role
@@ -92,7 +130,8 @@ type (
 		WarmPoolSize *int
 
 		// VPCID and SubnetIDs place the instances (private subnets, several
-		// zones). Required.
+		// zones). Required. ModeOnDemand takes the VPC only: its one subnet is
+		// OnDemand.SubnetID.
 		VPCID     pulumi.StringInput
 		SubnetIDs []pulumi.StringInput
 		// PermissionsBoundary is the role's boundary policy ARN.
@@ -108,7 +147,8 @@ type (
 		// buildkit-arm64. Default buildkit-<arch>.
 		Listener string
 		// Port is the listener's port, from the caller's port registry.
-		// Required.
+		// Required. With ModeOnDemand it is the port the NLB listens on and
+		// the proxy's listen port for this builder (see ProxyRoute).
 		Port int
 		// Sources may connect to Port (the runners' security group). At least
 		// one.
@@ -152,10 +192,16 @@ type (
 	// are registered with the caller's options, each the parent of its own
 	// resources.
 	Builder struct {
-		// Box is the Auto Scaling group and its parts.
+		// Box is the Auto Scaling group and its parts; with ModeOnDemand the
+		// single instance (Box.Instance) and its data volume
+		// (Box.DataVolume), and no group.
 		Box *asg.Appliance
 		// Front is the box's listener, target group and rules on the NLB.
+		// Nil with ModeOnDemand: the proxy's front is the listener.
 		Front *front.Front
+		// RoleTagKey and RoleTagValue are the tag the proxy finds the
+		// instance by (ModeOnDemand only).
+		RoleTagKey, RoleTagValue string
 		// Rendered is the user-data, for review goldens.
 		Rendered *bootstrap.Rendered
 	}
@@ -261,6 +307,17 @@ func (a Args) validate() error {
 func New(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.ResourceOption) (*Builder, error) {
 	if args == nil {
 		return nil, fmt.Errorf("buildkit ec2: New(%q, ...): args is nil", name)
+	}
+
+	switch args.Mode {
+	case "", ModeGroup:
+		if args.OnDemand != nil {
+			return nil, fmt.Errorf("buildkit ec2: New(%q, ...): OnDemand is set but Mode is %q", name, ModeGroup)
+		}
+	case ModeOnDemand:
+		return newOnDemand(ctx, name, args, opts...)
+	default:
+		return nil, fmt.Errorf("buildkit ec2: New(%q, ...): Mode %q: want %q or %q", name, args.Mode, ModeGroup, ModeOnDemand)
 	}
 
 	a := args.withDefaults(name)

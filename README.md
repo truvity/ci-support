@@ -84,6 +84,11 @@ b, err := ec2.New(ctx, "buildkit-arm64", &ec2.Args{
 
 [docs/buildkit-on-ec2.md](docs/buildkit-on-ec2.md) describes the machine.
 
+`Mode: ec2.ModeOnDemand` keeps each builder a single **stopped** instance with a
+persistent cache volume, behind an always-on wake proxy (`ec2.NewProxy`) that
+starts it when a client connects and stops it after 20 idle minutes; see
+"On demand" in that document, including the migration order.
+
 ## Consumers
 
 Who uses this, and through which surface (2026-10-25):

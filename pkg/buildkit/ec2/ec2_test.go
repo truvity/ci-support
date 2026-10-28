@@ -78,6 +78,8 @@ func (r *recorder) Call(args pulumi.MockCallArgs) (resource.PropertyMap, error) 
 		return resource.PropertyMap{"region": resource.NewStringProperty(testRegion), "name": resource.NewStringProperty(testRegion)}, nil
 	case "aws:index/getCallerIdentity:getCallerIdentity":
 		return resource.PropertyMap{"accountId": resource.NewStringProperty(testAccount)}, nil
+	case "aws:ec2/getSubnet:getSubnet":
+		return resource.PropertyMap{"id": args.Args["id"], "availabilityZone": resource.NewStringProperty(testRegion + "a")}, nil
 	case "aws:ssm/getParameter:getParameter":
 		return resource.PropertyMap{"name": args.Args["name"], "value": resource.NewStringProperty("ami-0example")}, nil
 	}

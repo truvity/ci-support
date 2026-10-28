@@ -1,0 +1,134 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OwnGroup",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:CompleteLifecycleAction",
+        "autoscaling:SetInstanceHealth"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:autoscaling:eu-west-1:@ACCOUNT@:autoScalingGroup:*:autoScalingGroupName/devel-buildkit-proxy"
+      ]
+    },
+    {
+      "Sid": "DescribeInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances"
+      ],
+      "Resource": [
+        "*"
+      ]
+    },
+    {
+      "Sid": "StartStopTargets1",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StartInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/role": [
+            "devel-buildkit-amd64"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "TagActivity1",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*"
+      ],
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "wake-proxy/last-active"
+          ]
+        },
+        "StringEquals": {
+          "aws:ResourceTag/role": [
+            "devel-buildkit-amd64"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "StartStopTargets2",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StartInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/role": [
+            "devel-buildkit-arm64"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "TagActivity2",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:ec2:eu-west-1:@ACCOUNT@:instance/*"
+      ],
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "wake-proxy/last-active"
+          ]
+        },
+        "StringEquals": {
+          "aws:ResourceTag/role": [
+            "devel-buildkit-arm64"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "UseTargetVolumeKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKeyWithoutPlaintext"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/0example-key"
+      ]
+    },
+    {
+      "Sid": "GrantTargetVolumeKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant"
+      ],
+      "Resource": [
+        "arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/0example-key"
+      ],
+      "Condition": {
+        "Bool": {
+          "kms:GrantIsForAWSResource": [
+            "true"
+          ]
+        }
+      }
+    }
+  ]
+}
