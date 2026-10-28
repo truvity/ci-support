@@ -399,7 +399,8 @@ WantedBy=multi-user.target
 // cache volume. It runs on the first boot (in the warm pool, when there is
 // one); the volume is mounted from fstab on every later boot.
 func installScript(device string) string {
-	return fmt.Sprintf(installHead+installVolume, User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar, device, device[len(device)-1:], CacheLabel, CacheDir)
+	return fmt.Sprintf(installHead+installVolume,
+		User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar, device, device[len(device)-1:], CacheLabel, CacheDir)
 }
 
 // installOnDemandScript is the install without the cache volume, which the
