@@ -21,9 +21,13 @@ func TestTaskRoleStatements(t *testing.T) {
 
 	raw, _ := json.Marshal(st)
 	want := `[{"Action":"s3:ListBucket","Condition":{"StringLike":{"s3:prefix":["a/*","b/*"]}},"Effect":"Allow","Resource":"@ARN@s3:::b","Sid":"CacheList"},` +
-		`{"Action":["s3:GetObject","s3:PutObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Effect":"Allow","Resource":["@ARN@s3:::b/a/*","@ARN@s3:::b/b/*"],"Sid":"CacheObjects"},` +
+		`{"Action":["s3:GetObject","s3:PutObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Effect":"Allow","Resource":` +
+		`["@ARN@s3:::b/a/*","@ARN@s3:::b/b/*"],"Sid":"CacheObjects"},` +
 		`{"Action":"ecr:GetAuthorizationToken","Effect":"Allow","Resource":"*","Sid":"EcrAuth"},` +
-		`{"Action":["ecr:PutImage","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:BatchCheckLayerAvailability","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer","ecr:DescribeRepositories","ecr:ListImages","ecr:DescribeImages"],"Effect":"Allow","Resource":"@ARN@ecr:r-1:acct:repository/ci/buildkit-cache","Sid":"EcrBuildkitCache"}]`
+		`{"Action":["ecr:PutImage","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload",` +
+		`"ecr:BatchCheckLayerAvailability","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer",` +
+		`"ecr:DescribeRepositories","ecr:ListImages","ecr:DescribeImages"],"Effect":"Allow",` +
+		`"Resource":"@ARN@ecr:r-1:acct:repository/ci/buildkit-cache","Sid":"EcrBuildkitCache"}]`
 
 	want = arn(want)
 
