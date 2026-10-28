@@ -1,0 +1,166 @@
+[
+  {
+    "inputs": {
+      "availabilityZone": "eu-west-1a",
+      "encrypted": true,
+      "kmsKeyId": "arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/0example-key",
+      "size": 100,
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-arm64-data",
+        "role": "devel-buildkit-arm64"
+      },
+      "type": "gp3"
+    },
+    "name": "buildkit-arm64-data",
+    "type": "aws:ebs/volume:Volume"
+  },
+  {
+    "inputs": {
+      "launchTemplate": {
+        "id": "buildkit-arm64_id",
+        "version": "1"
+      },
+      "subnetId": "subnet-0a",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-arm64",
+        "role": "devel-buildkit-arm64"
+      }
+    },
+    "name": "buildkit-arm64",
+    "type": "aws:ec2/instance:Instance"
+  },
+  {
+    "inputs": {
+      "blockDeviceMappings": [
+        {
+          "deviceName": "/dev/xvda",
+          "ebs": {
+            "deleteOnTermination": "true",
+            "encrypted": "true",
+            "volumeSize": 20,
+            "volumeType": "gp3"
+          }
+        }
+      ],
+      "iamInstanceProfile": {
+        "arn": ""
+      },
+      "imageId": "ami-0example",
+      "instanceType": "m7g.xlarge",
+      "metadataOptions": {
+        "httpEndpoint": "enabled",
+        "httpPutResponseHopLimit": 1,
+        "httpTokens": "required"
+      },
+      "name": "devel-buildkit-arm64",
+      "tagSpecifications": [
+        {
+          "resourceType": "instance",
+          "tags": {
+            "ManagedBy": "pulumi",
+            "Name": "devel-buildkit-arm64"
+          }
+        },
+        {
+          "resourceType": "volume",
+          "tags": {
+            "ManagedBy": "pulumi",
+            "Name": "devel-buildkit-arm64"
+          }
+        }
+      ],
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-arm64"
+      },
+      "updateDefaultVersion": true,
+      "userData": "\u003cuser-data\u003e",
+      "vpcSecurityGroupIds": [
+        "buildkit-arm64_id"
+      ]
+    },
+    "name": "buildkit-arm64",
+    "type": "aws:ec2/launchTemplate:LaunchTemplate"
+  },
+  {
+    "inputs": {
+      "description": "devel-buildkit-arm64 BuildKit builder",
+      "namePrefix": "devel-buildkit-arm64-",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-arm64"
+      },
+      "vpcId": "vpc-0example"
+    },
+    "name": "buildkit-arm64",
+    "type": "aws:ec2/securityGroup:SecurityGroup"
+  },
+  {
+    "inputs": {
+      "deviceName": "/dev/sdf",
+      "instanceId": "buildkit-arm64_id",
+      "stopInstanceBeforeDetaching": true,
+      "volumeId": "buildkit-arm64-data_id"
+    },
+    "name": "buildkit-arm64-data-attachment",
+    "type": "aws:ec2/volumeAttachment:VolumeAttachment"
+  },
+  {
+    "inputs": {
+      "name": "devel-buildkit-arm64",
+      "role": "devel-buildkit-arm64",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-arm64"
+      }
+    },
+    "name": "buildkit-arm64",
+    "type": "aws:iam/instanceProfile:InstanceProfile"
+  },
+  {
+    "inputs": {
+      "assumeRolePolicy": "{\n  \"Statement\": [\n    {\n      \"Action\": \"sts:AssumeRole\",\n      \"Effect\": \"Allow\",\n      \"Principal\": {\n        \"Service\": \"ec2.amazonaws.com\"\n      }\n    }\n  ],\n  \"Version\": \"2012-10-17\"\n}",
+      "inlinePolicies": [
+        {
+          "name": "appliance",
+          "policy": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Sid\": \"ReadParameters\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ssm:GetParameter\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/cert\",\n        \"arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/key\",\n        \"arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/client-ca\"\n      ]\n    },\n    {\n      \"Sid\": \"DecryptTheCertificate\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"kms:Decrypt\"\n      ],\n      \"Resource\": [\n        \"arn:@PARTITION@:kms:eu-west-1:@ACCOUNT@:key/*\"\n      ],\n      \"Condition\": {\n        \"ForAnyValue:StringEquals\": {\n          \"kms:ResourceAliases\": [\n            \"alias/test-ci-buildkit-server\"\n          ]\n        },\n        \"StringEquals\": {\n          \"kms:EncryptionContext:PARAMETER_ARN\": [\n            \"arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/cert\",\n            \"arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/arm64/key\",\n            \"arn:@PARTITION@:ssm:eu-west-1:@ACCOUNT@:parameter/ci/test/buildkit-server/client-ca\"\n          ],\n          \"kms:ViaService\": [\n            \"ssm.eu-west-1.amazonaws.com\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+        }
+      ],
+      "name": "devel-buildkit-arm64",
+      "tags": {
+        "ManagedBy": "pulumi",
+        "Name": "devel-buildkit-arm64"
+      }
+    },
+    "name": "buildkit-arm64",
+    "type": "aws:iam/role:Role"
+  },
+  {
+    "inputs": {
+      "cidrIpv4": "0.0.0.0/0",
+      "ipProtocol": "-1",
+      "securityGroupId": "buildkit-arm64_id"
+    },
+    "name": "buildkit-arm64-egress-0",
+    "type": "aws:vpc/securityGroupEgressRule:SecurityGroupEgressRule"
+  },
+  {
+    "inputs": {
+      "description": "BuildKit from the wake proxy",
+      "fromPort": 1234,
+      "ipProtocol": "tcp",
+      "referencedSecurityGroupId": "sg-0proxy",
+      "securityGroupId": "buildkit-arm64_id",
+      "toPort": 1234
+    },
+    "name": "buildkit-arm64-ingress-0",
+    "type": "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule"
+  },
+  {
+    "inputs": {},
+    "name": "buildkit-arm64",
+    "type": "truvity:asg:Box"
+  }
+]

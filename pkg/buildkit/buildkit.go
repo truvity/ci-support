@@ -122,6 +122,20 @@ type (
 		// ReadyTimeoutSeconds bounds the wait for the daemon after a start
 		// (loading a large cache takes minutes). Default 600.
 		ReadyTimeoutSeconds int
+
+		// OnDemand renders the daemon for a single instance that is started
+		// and stopped from outside (asg Args.Single, a wake proxy in front)
+		// and has no launch lifecycle: the unit is enabled and starts on
+		// every boot, after BootUnits; there is no in-service step and no
+		// ready check; the cache is NOT formatted or mounted here (asg's
+		// datavolume module mounts the data volume at CacheDir and must be
+		// given buildkitd.service in its Units), and CacheDevice is not
+		// used. The unit makes the mount point the daemon's again on every
+		// start, since a fresh file system is root's.
+		OnDemand bool
+		// BootUnits are the units an OnDemand daemon requires and starts
+		// after, besides the metadata guard (the certificate fetch).
+		BootUnits []string
 	}
 
 	// GC is the cache's garbage collection (buildkitd.toml, worker.oci).
@@ -225,7 +239,7 @@ func (c Config) validate() error {
 		add("CPUWeight %d: want 1..10000", c.CPUWeight)
 	}
 
-	if !deviceRe.MatchString(c.CacheDevice) {
+	if !c.OnDemand && !deviceRe.MatchString(c.CacheDevice) {
 		add("CacheDevice %q: want /dev/sdf to /dev/sdp", c.CacheDevice)
 	}
 
@@ -278,6 +292,10 @@ root = %q
 func (c Config) UnitText() string {
 	c = c.withDefaults()
 
+	if c.OnDemand {
+		return c.onDemandUnitText()
+	}
+
 	return fmt.Sprintf(`[Unit]
 Description=BuildKit daemon (rootless, mutual TLS on :%d)
 Wants=network-online.target
@@ -305,6 +323,45 @@ MemoryMax=%d%%
 CPUWeight=%d
 `, c.Port, GuardUnit, GuardUnit, CacheDir, User, User, HomeDir, SocketDir, SocketDir, ConfigPath,
 		c.MemoryHighPercent, c.MemoryMaxPercent, c.CPUWeight)
+}
+
+// onDemandUnitText is the unit of a daemon that starts on every boot: it is
+// enabled, it requires the guard and the BootUnits, and it hands the mount
+// point of the data volume to its user before it starts. The data volume
+// itself is required by a drop-in of asg's datavolume module.
+func (c Config) onDemandUnitText() string {
+	deps := strings.Join(append([]string{GuardUnit}, c.BootUnits...), " ")
+
+	return fmt.Sprintf(`[Unit]
+Description=BuildKit daemon (rootless, mutual TLS on :%d)
+Wants=network-online.target
+After=network-online.target %[2]s
+Requires=%[2]s
+
+[Service]
+Type=simple
+User=%[3]s
+Group=%[3]s
+Environment=HOME=%[4]s XDG_RUNTIME_DIR=%[5]s
+RuntimeDirectory=buildkit
+RuntimeDirectoryMode=0755
+ExecStartPre=+/usr/bin/chown %[3]s:%[3]s %[6]s
+ExecStartPre=+/usr/bin/chmod 0700 %[6]s
+ExecStart=/usr/local/bin/rootlesskit --state-dir=%[6]s/rootlesskit --net=host /usr/local/bin/buildkitd --config=%[7]s
+Delegate=yes
+KillMode=mixed
+TimeoutStopSec=120
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+TasksMax=infinity
+MemoryHigh=%[8]d%%
+MemoryMax=%[9]d%%
+CPUWeight=%[10]d
+
+[Install]
+WantedBy=multi-user.target
+`, c.Port, deps, User, HomeDir, SocketDir, CacheDir, ConfigPath, c.MemoryHighPercent, c.MemoryMaxPercent, c.CPUWeight)
 }
 
 // GuardRules is the nftables table that drops traffic to the instance
@@ -342,7 +399,16 @@ WantedBy=multi-user.target
 // cache volume. It runs on the first boot (in the warm pool, when there is
 // one); the volume is mounted from fstab on every later boot.
 func installScript(device string) string {
-	return fmt.Sprintf(`set -euo pipefail
+	return fmt.Sprintf(installHead+installVolume, User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar, device, device[len(device)-1:], CacheLabel, CacheDir)
+}
+
+// installOnDemandScript is the install without the cache volume, which the
+// datavolume module prepares on every boot.
+func installOnDemandScript() string {
+	return fmt.Sprintf(installHead, User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar)
+}
+
+const installHead = `set -euo pipefail
 if ! id %[1]s >/dev/null 2>&1; then
   useradd -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 --system --create-home --home-dir %[2]s --shell /sbin/nologin %[1]s
 fi
@@ -352,7 +418,9 @@ tar -xzf %[5]s -C /usr/local bin
 tar -xzf %[6]s -C /usr/local/bin rootlesskit rootlessctl
 rm -f %[5]s %[6]s
 sysctl --system >/dev/null
+`
 
+const installVolume = `
 # The cache volume: the launch template's %[7]s, which a Nitro instance shows
 # as an NVMe device behind a udev link.
 dev=""
@@ -369,8 +437,7 @@ grep -q 'LABEL=%[9]s ' /etc/fstab || echo 'LABEL=%[9]s %[10]s xfs defaults,noati
 mountpoint -q %[10]s || mount %[10]s
 chown %[1]s:%[1]s %[10]s
 chmod 0700 %[10]s
-`, User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar, device, device[len(device)-1:], CacheLabel, CacheDir)
-}
+`
 
 // ReadyCheck is the shell check that the daemon answers on its unix socket.
 func ReadyCheck() string {
@@ -392,6 +459,10 @@ func (m mod) Contribute() (module.Contribution, error) {
 	toml, err := c.TOML()
 	if err != nil {
 		return module.Contribution{}, err
+	}
+
+	if c.OnDemand {
+		return m.contributeOnDemand(c, toml, sysctl)
 	}
 
 	frag := bootstrap.Compose("buildkit",
@@ -416,6 +487,31 @@ func (m mod) Contribute() (module.Contribution, error) {
 			Name: "buildkitd", Script: ReadyCheck(), TimeoutSeconds: c.ReadyTimeoutSeconds,
 		}},
 		Scrape: []module.ScrapeTarget{{Name: "buildkitd", Address: c.DebugAddress, Path: "/metrics"}},
+	}, nil
+}
+
+// contributeOnDemand is the daemon of a single instance: the same files, the
+// install without the volume, and a unit that is enabled. It has no
+// in-service step and no ready check (there is no launch hook to complete).
+func (m mod) contributeOnDemand(c Config, toml, sysctl string) (module.Contribution, error) {
+	frag := bootstrap.Compose("buildkit",
+		bootstrap.Package{Name: "git"},
+		bootstrap.Package{Name: "nftables"},
+		bootstrap.Package{Name: "shadow-utils"},
+		bootstrap.Package{Name: "xfsprogs"},
+		bootstrap.Binary{Name: "buildkit " + BuildKitVersion, Dest: releaseTar, PerArch: BuildKitRelease},
+		bootstrap.Binary{Name: "rootlesskit " + RootlessKitVersion, Dest: rootlessTar, PerArch: RootlessKitRelease},
+		bootstrap.File{Path: ConfigPath, Content: toml, Delivery: bootstrap.DeliveryInline},
+		bootstrap.File{Path: guardPath, Content: GuardRules, Delivery: bootstrap.DeliveryInline},
+		bootstrap.File{Path: sysctlPath, Content: sysctl, Delivery: bootstrap.DeliveryInline},
+		bootstrap.Step{Name: "buildkit install", Script: installOnDemandScript()},
+		bootstrap.Unit{Name: GuardUnit, Content: guardUnit, Enable: true, Start: true},
+		bootstrap.Unit{Name: Unit, Content: c.UnitText(), Enable: true, Start: true},
+	)
+
+	return module.Contribution{
+		Fragments: []bootstrap.Fragment{frag},
+		Scrape:    []module.ScrapeTarget{{Name: "buildkitd", Address: c.DebugAddress, Path: "/metrics"}},
 	}, nil
 }
 

@@ -1,0 +1,668 @@
+#cloud-config
+packages:
+  - git
+  - nftables
+  - shadow-utils
+  - xfsprogs
+write_files:
+  - path: /etc/asg/data-volume.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/asg/modules/datavolume. No secret.
+      DEVICE='/dev/sdf'
+      VOLUME_ID=''
+      MOUNT_POINT='/var/lib/buildkit'
+      FS_TYPE='xfs'
+      LABEL='bkcache'
+      MOUNT_OPTIONS='noatime'
+      TIMEOUT_SECONDS=600
+  - path: /etc/asg/ssmcert-buildkit-ready.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # ssmcert ready check: buildkit
+      timeout 10 /usr/local/bin/buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers >/dev/null
+  - path: /etc/asg/ssmcert-buildkit.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/asg/modules/ssmcert. Parameter names only, no secret.
+      NAME='buildkit'
+      CERT_PARAM='/ci/test/buildkit-server/arm64/cert'
+      KEY_PARAM='/ci/test/buildkit-server/arm64/key'
+      CA_PARAM='/ci/test/buildkit-server/client-ca'
+      DIR='/run/asg-ssmcert/buildkit'
+      OWNER='buildkit:buildkit'
+      RESTART_UNITS=('buildkitd.service')
+      READY_TIMEOUT=600
+      WINDOW_START=0
+      WINDOW_END=23
+      DRAIN_PORT=1234
+      STANDBY=0
+      GROUP=''
+      HOOK=''
+      DRAIN_SECONDS=1800
+      IDLE_SECONDS=300
+      REPLACEMENT_SECONDS=1200
+  - path: /etc/buildkit/buildkitd.toml
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/ci-support/pkg/buildkit. No secret.
+      root = "/var/lib/buildkit"
+
+      [grpc]
+        # TLS applies to every tcp:// listener; the unix socket stays plain and is
+        # reachable by root only (the watchdog and the ready check).
+        address = ["tcp://0.0.0.0:1234", "unix:///run/buildkit/buildkitd.sock"]
+        debugAddress = "127.0.0.1:6060"
+
+        [grpc.tls]
+          cert = "/run/asg-ssmcert/buildkit/cert.pem"
+          key = "/run/asg-ssmcert/buildkit/key.pem"
+          ca = "/run/asg-ssmcert/buildkit/ca.pem"
+
+      [worker.oci]
+        enabled = true
+        rootless = true
+        snapshotter = "overlayfs"
+        max-parallelism = 6
+        gc = true
+        reservedSpace = "10GB"
+        maxUsedSpace = "80GB"
+        minFreeSpace = "10GB"
+
+      [worker.containerd]
+        enabled = false
+  - path: /etc/buildkit/imds-guard.nft
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/ci-support/pkg/buildkit.
+      table inet buildkit_imds {
+        chain output {
+          type filter hook output priority filter; policy accept;
+          meta skuid 0 accept
+          ip daddr 169.254.169.254 counter drop
+          ip6 daddr fd00:ec2::254 counter drop
+        }
+      }
+  - path: /etc/sysctl.d/90-buildkit.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Rendered by github.com/truvity/ci-support/pkg/buildkit: rootless BuildKit.
+      user.max_user_namespaces = 63359
+  - path: /etc/systemd/system/asg-data-volume.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Wait for, format once and mount the persistent data volume
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=660
+      ExecStart=/usr/local/lib/asg/data-volume.sh
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/asg-ssmcert-buildkit.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Check buildkit's certificate parameters for a new version and rotate in the window
+
+      [Service]
+      Type=oneshot
+      Environment=ASG_SSMCERT_CONF=/etc/asg/ssmcert-buildkit.conf
+      ExecStart=/usr/local/lib/asg/ssmcert-buildkit.sh check
+  - path: /etc/systemd/system/asg-ssmcert-buildkit.timer
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Check buildkit's certificate parameters every 60 minutes
+
+      [Timer]
+      OnBootSec=60min
+      OnUnitActiveSec=60min
+      RandomizedDelaySec=300
+  - path: /etc/systemd/system/buildkit-cert-check.timer
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Check the BuildKit certificate parameters for a new version every 60 minutes
+
+      [Timer]
+      OnBootSec=60min
+      OnUnitActiveSec=60min
+      RandomizedDelaySec=300
+      Unit=asg-ssmcert-buildkit.service
+
+      [Install]
+      WantedBy=timers.target
+  - path: /etc/systemd/system/buildkit-cert.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Fetch the BuildKit server certificate, key and client CA from SSM
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      Environment=ASG_SSMCERT_CONF=/etc/asg/ssmcert-buildkit.conf
+      ExecStart=/usr/local/lib/asg/ssmcert-buildkit.sh load
+      Restart=on-failure
+      RestartSec=15
+      TimeoutStartSec=300
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/buildkit-imds-guard.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Keep everything but root away from the instance metadata service
+      DefaultDependencies=no
+      Before=network-pre.target buildkitd.service
+      Wants=network-pre.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStartPre=-/usr/sbin/nft delete table inet buildkit_imds
+      ExecStart=/usr/sbin/nft -f /etc/buildkit/imds-guard.nft
+      ExecStop=/usr/sbin/nft delete table inet buildkit_imds
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/buildkitd.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=BuildKit daemon (rootless, mutual TLS on :1234)
+      Wants=network-online.target
+      After=network-online.target buildkit-imds-guard.service buildkit-cert.service
+      Requires=buildkit-imds-guard.service buildkit-cert.service
+
+      [Service]
+      Type=simple
+      User=buildkit
+      Group=buildkit
+      Environment=HOME=/var/lib/buildkit-home XDG_RUNTIME_DIR=/run/buildkit
+      RuntimeDirectory=buildkit
+      RuntimeDirectoryMode=0755
+      ExecStartPre=+/usr/bin/chown buildkit:buildkit /var/lib/buildkit
+      ExecStartPre=+/usr/bin/chmod 0700 /var/lib/buildkit
+      ExecStart=/usr/local/bin/rootlesskit --state-dir=/var/lib/buildkit/rootlesskit --net=host /usr/local/bin/buildkitd --config=/etc/buildkit/buildkitd.toml
+      Delegate=yes
+      KillMode=mixed
+      TimeoutStopSec=120
+      Restart=always
+      RestartSec=5
+      LimitNOFILE=1048576
+      TasksMax=infinity
+      MemoryHigh=85%
+      MemoryMax=92%
+      CPUWeight=50
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/buildkitd.service.d/10-bootstrap.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Requires=asg-data-volume.service
+      After=asg-data-volume.service
+  - path: /usr/local/lib/asg/data-volume.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # asg-data-volume: wait for the persistent data volume, make a file system on
+      # it only if it has no signature, and mount it. Runs on every boot and is safe
+      # to repeat. Generated by github.com/truvity/asg/modules/datavolume.
+      set -euo pipefail
+
+      DEV_DIR="${ASG_DEV_DIR:-/dev}"
+      # shellcheck disable=SC1090
+      . "${ASG_DATAVOLUME_CONF:-/etc/asg/data-volume.conf}"
+
+      log() { printf 'asg-data-volume: %s\n' "$*" >&2; }
+      die() { log "$*"; exit 1; }
+
+      name="${DEVICE#/dev/}"
+      serial="${VOLUME_ID//-/}"
+
+      # find_device prints the block device the volume is attached as.
+      find_device() {
+        local d m
+        if [ -n "$serial" ]; then
+          for d in "$DEV_DIR"/nvme*n1; do
+            [ -e "$d" ] || continue
+            [ "$(lsblk -dno SERIAL "$d" 2>/dev/null | tr -d ' ')" = "$serial" ] && { echo "$d"; return 0; }
+          done
+          return 1
+        fi
+        # The image's udev rules link the attached name to the NVMe device (or the
+        # Xen-style device keeps the name, or its xvd twin).
+        for d in "$DEV_DIR/$name" "$DEV_DIR/xvd${name#sd}"; do
+          [ -e "$d" ] && { readlink -f "$d"; return 0; }
+        done
+        # No link: ask each NVMe EBS device for the name it was attached under.
+        if command -v ebsnvme-id >/dev/null 2>&1; then
+          for d in "$DEV_DIR"/nvme*n1; do
+            [ -e "$d" ] || continue
+            m="$(ebsnvme-id -b "$d" 2>/dev/null || true)"
+            [ "${m#/dev/}" = "$name" ] && { echo "$d"; return 0; }
+          done
+        fi
+        return 1
+      }
+
+      dev=""
+      deadline=$((SECONDS + TIMEOUT_SECONDS))
+      while [ "$SECONDS" -lt "$deadline" ]; do
+        if dev="$(find_device)"; then break; fi
+        dev=""
+        sleep 2
+      done
+      [ -n "$dev" ] || die "no device for $DEVICE after ${TIMEOUT_SECONDS}s: is the volume attached?"
+      log "$DEVICE is $dev"
+
+      if mountpoint -q "$MOUNT_POINT"; then
+        log "$MOUNT_POINT is already mounted"
+        exit 0
+      fi
+
+      fs="$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)"
+      if [ -z "$fs" ]; then
+        # No file system signature. Make one only on a device that is entirely
+        # blank: not on one with a partition table or partitions.
+        parts="$(lsblk -nro TYPE "$dev" 2>/dev/null || true)"
+        if [ -n "$(blkid -o value -s PTTYPE "$dev" 2>/dev/null || true)" ] || [[ "$parts" == *part* ]]; then
+          die "$dev has a partition table but no file system: refusing to format it"
+        fi
+        log "$dev is blank: making a $FS_TYPE file system labelled $LABEL"
+        case "$FS_TYPE" in
+          xfs) mkfs.xfs -L "$LABEL" "$dev" ;;
+          ext4) mkfs.ext4 -q -L "$LABEL" "$dev" ;;
+          *) die "unknown file system type $FS_TYPE" ;;
+        esac
+        fs="$FS_TYPE"
+      elif [ "$fs" != "$FS_TYPE" ]; then
+        log "$dev already holds a $fs file system, not $FS_TYPE: mounting it as it is"
+      fi
+
+      mkdir -p "$MOUNT_POINT"
+      mount -t "$fs" -o "$MOUNT_OPTIONS" "$dev" "$MOUNT_POINT"
+      log "mounted $dev at $MOUNT_POINT"
+  - path: /usr/local/lib/asg/ssmcert-buildkit.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # asg-ssmcert: a certificate, its key and a CA bundle from SSM Parameter
+      # Store into files under /run, and a rotation inside a nightly window for a
+      # daemon that loads them only at start. Generated by
+      # github.com/truvity/asg/modules/ssmcert.
+      #
+      #   load   read the parameters into DIR and record their versions
+      #   check  compare the recorded versions with the current ones; on a change,
+      #          rotate if the window is open
+      set -uo pipefail
+
+      # shellcheck disable=SC1090
+      . "${ASG_SSMCERT_CONF:?ASG_SSMCERT_CONF names the configuration}"
+
+      READY="${ASG_SSMCERT_READY:-/etc/asg/ssmcert-${NAME}-ready.sh}"
+      WATCHDOG_STATE="${ASG_WATCHDOG_STATE:-/run/asg-watchdog}"
+      POLL="${ASG_SSMCERT_POLL:-10}"
+
+      log() { printf '%s asg-ssmcert[%s]: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$NAME" "$*" >&2; }
+
+      imds() {
+        local t
+        t="$(curl -fsS -m 5 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)" || return 1
+        curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $t" "http://169.254.169.254/latest/meta-data/$1"
+      }
+
+      REGION=""
+      region() {
+        [ -n "$REGION" ] || REGION="$(imds placement/region)" || { log "no region from the instance metadata"; return 1; }
+      }
+
+      params() {
+        printf '%s cert.pem 0644\n%s key.pem 0600\n' "$CERT_PARAM" "$KEY_PARAM"
+        [ -z "$CA_PARAM" ] || printf '%s ca.pem 0644\n' "$CA_PARAM"
+      }
+
+      # load reads every parameter (decrypted) into a new directory beside DIR and
+      # swaps it in, so a reader never sees half a set.
+      load() {
+        region || return 1
+        umask 077
+        local parent tmp param file mode out v i
+        parent="$(dirname "$DIR")"
+        install -d -m 0755 "$parent" || return 1
+        tmp="$(mktemp -d "$parent/.ssmcert-$NAME.XXXXXX")" || return 1
+        : >"$tmp/versions"
+        while read -r param file mode; do
+          out=""
+          for i in 1 2 3 4 5; do
+            if out="$(aws ssm get-parameter --region "$REGION" --name "$param" --with-decryption --output json)" && [ -n "$out" ]; then
+              break
+            fi
+            out=""
+            sleep $((i * 3))
+          done
+          if [ -z "$out" ]; then
+            log "cannot read $param"
+            rm -rf "$tmp"
+            return 1
+          fi
+          if ! v="$(printf '%s' "$out" | python3 -c 'import json,sys
+      p = json.load(sys.stdin)["Parameter"]
+      with open(sys.argv[1], "w") as f:
+          f.write(p["Value"])
+      print(p["Version"])' "$tmp/$file")"; then
+            out=""
+            log "cannot parse $param"
+            rm -rf "$tmp"
+            return 1
+          fi
+          out=""
+          chmod "$mode" "$tmp/$file"
+          printf '%s %s\n' "$param" "$v" >>"$tmp/versions"
+        done < <(params)
+        chmod 0644 "$tmp/versions"
+        chmod 0700 "$tmp"
+        [ -z "$OWNER" ] || chown -R "$OWNER" "$tmp" || { rm -rf "$tmp"; return 1; }
+        if [ -e "$DIR" ]; then
+          rm -rf "$DIR.old"
+          mv "$DIR" "$DIR.old" || { rm -rf "$tmp"; return 1; }
+        fi
+        mv "$tmp" "$DIR" || return 1
+        rm -rf "$DIR.old"
+        log "loaded $(tr '\n' ' ' <"$DIR/versions")"
+      }
+
+      in_window() {
+        local h
+        h=$((10#${ASG_SSMCERT_HOUR:-$(date -u +%H)}))
+        if [ "$WINDOW_START" -lt "$WINDOW_END" ]; then
+          [ "$h" -ge "$WINDOW_START" ] && [ "$h" -lt "$WINDOW_END" ]
+        else
+          [ "$h" -ge "$WINDOW_START" ] || [ "$h" -lt "$WINDOW_END" ]
+        fi
+      }
+
+      connections() { ss -Htn state established "( sport = :$DRAIN_PORT )" | wc -l; }
+
+      # pause_watchdog keeps the watchdog from acting while the daemon restarts
+      # on purpose (watchdog >= v0.4.0 honours paused-until).
+      pause_watchdog() {
+        mkdir -p "$WATCHDOG_STATE"
+        echo $(($(date +%s) + $1)) >"$WATCHDOG_STATE/paused-until"
+      }
+      resume_watchdog() { rm -f "$WATCHDOG_STATE/paused-until" "$WATCHDOG_STATE/unhealthy-since"; }
+
+      restart_and_wait() {
+        load || return 1
+        log "restarting ${RESTART_UNITS[*]}"
+        systemctl restart "${RESTART_UNITS[@]}" || return 1
+        local deadline=$((SECONDS + READY_TIMEOUT))
+        until bash "$READY" >/dev/null 2>&1; do
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "not ready after ${READY_TIMEOUT}s"
+            return 1
+          fi
+          sleep "$POLL"
+        done
+        log "ready with the new certificate"
+      }
+
+      rotate_in_place() {
+        local idle=0 deadline=$((SECONDS + 3000))
+        while [ "$idle" -lt "$IDLE_SECONDS" ]; do
+          if [ "$SECONDS" -ge "$deadline" ] || ! in_window; then
+            log "no idle period of ${IDLE_SECONDS}s; trying again at the next check"
+            return 0
+          fi
+          if [ "$(connections)" -eq 0 ]; then idle=$((idle + POLL)); else idle=0; fi
+          sleep "$POLL"
+        done
+        pause_watchdog $((READY_TIMEOUT + 300))
+        if restart_and_wait; then
+          resume_watchdog
+          return 0
+        fi
+        resume_watchdog
+        return 1
+      }
+
+      # group prints: desired max in-service-others busy-others self-state.
+      group() {
+        aws autoscaling describe-auto-scaling-groups --region "$REGION" --auto-scaling-group-names "$GROUP" --output json |
+          python3 -c 'import json,sys
+      g = json.load(sys.stdin)["AutoScalingGroups"][0]
+      me = sys.argv[1]
+      others = [i for i in g["Instances"] if i["InstanceId"] != me]
+      mine = [i["LifecycleState"] for i in g["Instances"] if i["InstanceId"] == me]
+      ins = sum(1 for i in others if i["LifecycleState"] == "InService")
+      busy = sum(1 for i in others if i["LifecycleState"] != "InService")
+      print(g["DesiredCapacity"], g["MaxSize"], ins, busy, mine[0] if mine else "Gone")' "$IID"
+      }
+
+      # leave_standby returns the instance to service, completes the launch hook
+      # that ExitStandby runs again, and sets the desired capacity back to before.
+      leave_standby() {
+        local before="$1" d m ins busy state deadline
+        aws autoscaling exit-standby --region "$REGION" --auto-scaling-group-name "$GROUP" --instance-ids "$IID" >/dev/null ||
+          { log "exit-standby failed"; return 1; }
+        deadline=$((SECONDS + 900))
+        while :; do
+          read -r d m ins busy state < <(group) || state=""
+          case "$state" in
+            InService) break ;;
+            Pending:Wait)
+              aws autoscaling complete-lifecycle-action --region "$REGION" --auto-scaling-group-name "$GROUP" \
+                --lifecycle-hook-name "$HOOK" --instance-id "$IID" --lifecycle-action-result CONTINUE >/dev/null 2>&1 || true
+              ;;
+          esac
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "not back in service after 15 minutes (state '$state')"
+            return 1
+          fi
+          sleep "$POLL"
+        done
+        read -r d m ins busy state < <(group) || return 1
+        if [ "$d" -eq $((before + 1)) ]; then
+          log "back in service; desired capacity $d -> $before (the termination policy picks who leaves)"
+          aws autoscaling set-desired-capacity --region "$REGION" --auto-scaling-group-name "$GROUP" --desired-capacity "$before" >/dev/null ||
+            { log "set-desired-capacity failed"; return 1; }
+        else
+          log "back in service; desired capacity is $d, not $((before + 1)): left as it is"
+        fi
+      }
+
+      rotate_standby() {
+        local d m ins busy state deadline
+        IID="$(imds instance-id)" || { log "no instance id"; return 1; }
+        read -r d m ins busy state < <(group) || { log "cannot describe $GROUP"; return 1; }
+        if [ "$state" != InService ] || [ "$busy" -ne 0 ] || [ "$ins" -lt $((d - 1)) ] || [ "$d" -ge "$m" ]; then
+          log "group busy or full (desired $d, max $m, others in service $ins, others busy $busy, self $state); trying again at the next check"
+          return 0
+        fi
+        pause_watchdog $((REPLACEMENT_SECONDS + DRAIN_SECONDS + READY_TIMEOUT + 1200))
+        log "entering Standby; the group puts a replacement in service"
+        if ! aws autoscaling enter-standby --region "$REGION" --auto-scaling-group-name "$GROUP" --instance-ids "$IID" \
+          --no-should-decrement-desired-capacity >/dev/null; then
+          log "enter-standby failed"
+          resume_watchdog
+          return 1
+        fi
+        deadline=$((SECONDS + REPLACEMENT_SECONDS))
+        while :; do
+          read -r _ _ ins busy state < <(group) || state=""
+          [ "$state" = Standby ] && [ "$ins" -ge "$d" ] && break
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            log "no replacement in service after ${REPLACEMENT_SECONDS}s; leaving Standby without a restart"
+            leave_standby "$d"
+            resume_watchdog
+            return 1
+          fi
+          sleep "$POLL"
+        done
+        deadline=$((SECONDS + DRAIN_SECONDS))
+        until [ "$(connections)" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; do sleep "$POLL"; done
+        log "$(connections) connection(s) left on :$DRAIN_PORT"
+        if ! restart_and_wait; then
+          log "the restart failed; terminating this instance, the replacement keeps serving"
+          aws autoscaling terminate-instance-in-auto-scaling-group --region "$REGION" --instance-id "$IID" \
+            --no-should-decrement-desired-capacity >/dev/null || log "terminate failed"
+          return 1
+        fi
+        leave_standby "$d"
+        local rc=$?
+        resume_watchdog
+        return "$rc"
+      }
+
+      check() {
+        region || return 1
+        [ -s "$DIR/versions" ] || { log "nothing loaded yet ($DIR/versions)"; return 1; }
+        local param ver cur changed=0
+        while read -r param ver; do
+          cur="$(aws ssm get-parameter --region "$REGION" --name "$param" --query Parameter.Version --output text)" ||
+            { log "cannot read the version of $param"; return 1; }
+          if [ "$cur" != "$ver" ]; then
+            log "$param: version $ver loaded, $cur current"
+            changed=1
+          fi
+        done <"$DIR/versions"
+        [ "$changed" = 1 ] || return 0
+        if ! in_window; then
+          log "a new version waits for the window ($WINDOW_START:00-$WINDOW_END:00 UTC)"
+          return 0
+        fi
+        if [ "$STANDBY" = 1 ]; then rotate_standby; else rotate_in_place; fi
+      }
+
+      case "${1:-}" in
+        load) load ;;
+        check) check ;;
+        *)
+          echo "usage: $0 load|check" >&2
+          exit 2
+          ;;
+      esac
+runcmd:
+  - set -e
+  - - bash
+    - -ec
+    - |
+      # binary buildkit v0.33.0
+      bs_die() {
+        echo "bootstrap: $1" >&2
+        exit 1
+      }
+      case "$(uname -m)" in
+        x86_64 | amd64) arch=amd64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) bs_die "unsupported architecture $(uname -m)" ;;
+      esac
+      case "$arch" in
+        amd64) url='https://github.com/moby/buildkit/releases/download/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz' sum='b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead' ;;
+        arm64) url='https://github.com/moby/buildkit/releases/download/v0.33.0/buildkit-v0.33.0.linux-arm64.tar.gz' sum='e5acfb5929f967fde3b925ddb39f79fd481a0e96774c641fab3a0e83950d7bfa' ;;
+        *) bs_die 'no build of buildkit v0.33.0 for this architecture' ;;
+      esac
+      dest='/usr/local/src/buildkit.tar.gz' mode=0755
+      tmp="$(mktemp)" || bs_die "mktemp failed"
+      trap 'rm -f "$tmp"' EXIT
+      ok=0
+      for i in 1 2 3 4 5; do
+        if curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp" "$url" \
+          && printf '%s  %s\n' "$sum" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
+          ok=1
+          break
+        fi
+        echo "bootstrap: download of $url failed or did not match its sha256 (attempt $i)" >&2
+        sleep 3
+      done
+      [ "$ok" = 1 ] || bs_die "giving up on $url"
+      install -D -m "$mode" "$tmp" "$dest" || bs_die "cannot install $dest"
+  - - bash
+    - -ec
+    - |
+      # binary rootlesskit v3.0.1
+      bs_die() {
+        echo "bootstrap: $1" >&2
+        exit 1
+      }
+      case "$(uname -m)" in
+        x86_64 | amd64) arch=amd64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) bs_die "unsupported architecture $(uname -m)" ;;
+      esac
+      case "$arch" in
+        amd64) url='https://github.com/rootless-containers/rootlesskit/releases/download/v3.0.1/rootlesskit-x86_64.tar.gz' sum='0850aa446151dfbdca15ed228ff0151751792cb5a99260b9a6738e1b490cc37b' ;;
+        arm64) url='https://github.com/rootless-containers/rootlesskit/releases/download/v3.0.1/rootlesskit-aarch64.tar.gz' sum='fdd9d2aa12bb8914081dfe1cd129c5a6a06cf1f80c732713f905a92c07b9b45c' ;;
+        *) bs_die 'no build of rootlesskit v3.0.1 for this architecture' ;;
+      esac
+      dest='/usr/local/src/rootlesskit.tar.gz' mode=0755
+      tmp="$(mktemp)" || bs_die "mktemp failed"
+      trap 'rm -f "$tmp"' EXIT
+      ok=0
+      for i in 1 2 3 4 5; do
+        if curl -fsSL --connect-timeout 10 --max-time 300 -o "$tmp" "$url" \
+          && printf '%s  %s\n' "$sum" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
+          ok=1
+          break
+        fi
+        echo "bootstrap: download of $url failed or did not match its sha256 (attempt $i)" >&2
+        sleep 3
+      done
+      [ "$ok" = 1 ] || bs_die "giving up on $url"
+      install -D -m "$mode" "$tmp" "$dest" || bs_die "cannot install $dest"
+  - - bash
+    - -ec
+    - |
+      # systemd daemon-reload
+      systemctl daemon-reload
+  - - bash
+    - -ec
+    - |
+      # buildkit install
+      set -euo pipefail
+      if ! id buildkit >/dev/null 2>&1; then
+        useradd -K SUB_UID_COUNT=0 -K SUB_GID_COUNT=0 --system --create-home --home-dir /var/lib/buildkit-home --shell /sbin/nologin buildkit
+      fi
+      grep -q '^buildkit:' /etc/subuid || echo 'buildkit:300000:65536' >>/etc/subuid
+      grep -q '^buildkit:' /etc/subgid || echo 'buildkit:300000:65536' >>/etc/subgid
+      tar -xzf /usr/local/src/buildkit.tar.gz -C /usr/local bin
+      tar -xzf /usr/local/src/rootlesskit.tar.gz -C /usr/local/bin rootlesskit rootlessctl
+      rm -f /usr/local/src/buildkit.tar.gz /usr/local/src/rootlesskit.tar.gz
+      sysctl --system >/dev/null
+  - - bash
+    - -ec
+    - |
+      # systemd units
+      systemctl enable --now 'asg-data-volume.service'
+      systemctl enable --now 'buildkit-cert-check.timer'
+      systemctl enable 'buildkit-cert.service'
+      systemctl enable --now 'buildkit-imds-guard.service'
+      systemctl enable --now 'buildkitd.service'
