@@ -113,7 +113,9 @@ write_files:
               "tagKey": "role",
               "tagValue": "devel-buildkit-arm64"
             },
-            "targetPort": 1234
+            "targetPort": 1234,
+            "wakeOn": "data",
+            "firstByteTimeout": "30s"
           },
           {
             "name": "amd64",
@@ -122,7 +124,9 @@ write_files:
               "tagKey": "role",
               "tagValue": "devel-buildkit-amd64"
             },
-            "targetPort": 1234
+            "targetPort": 1234,
+            "wakeOn": "data",
+            "firstByteTimeout": "30s"
           }
         ],
         "idleTimeout": "20m0s",
@@ -342,7 +346,7 @@ runcmd:
         *) bs_die "unsupported architecture $(uname -m)" ;;
       esac
       case "$arch" in
-        arm64) url='https://github.com/truvity/asg/releases/download/v0.6.0/wake-proxy_0.6.0_linux_arm64' sum='abababababababababababababababababababababababababababababababab' ;;
+        arm64) url='https://github.com/truvity/asg/releases/download/v0.8.0/wake-proxy_0.8.0_linux_arm64' sum='abababababababababababababababababababababababababababababababab' ;;
         *) bs_die 'no build of wake-proxy for this architecture' ;;
       esac
       dest='/usr/local/bin/wake-proxy' mode=0755
