@@ -350,7 +350,7 @@ func (a ProxyArgs) statements(pc asg.PolicyContext) ([]asg.Statement, error) {
 
 	out := make([]asg.Statement, len(st))
 	for i, s := range st {
-		out[i] = asg.Statement{Sid: s.Sid, Effect: s.Effect, Action: s.Action, Resource: s.Resource, Condition: s.Condition}
+		out[i] = asg.Statement(s)
 	}
 
 	return out, nil

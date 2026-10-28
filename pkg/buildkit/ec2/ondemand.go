@@ -188,9 +188,11 @@ func (a Args) validateOnDemand(raw Args) error {
 		add("OnDemand.RoleTagValue %q: want a tag value of letters, digits and _ . : / = + @ - space", o.RoleTagValue)
 	}
 
-	if a.Rotation.Name != "" || a.Rotation.Cert != "" || a.Rotation.Key != "" || a.Rotation.CA != "" || len(a.Rotation.RestartUnits) > 0 ||
-		a.Rotation.ReadyCheck != "" || a.Rotation.DrainPort != 0 || a.Rotation.Group != "" || a.Rotation.Hook != "" || a.Rotation.Dir != "" || a.Rotation.Owner != "" {
-		add("Rotation: only the timing (CheckIntervalMinutes, WindowStartHour, WindowEndHour, IdleMinutes, ReadyTimeoutSeconds) can be set; the rest is fixed by the builder")
+	r := a.Rotation
+	if r.Name != "" || r.Cert != "" || r.Key != "" || r.CA != "" || len(r.RestartUnits) > 0 || r.ReadyCheck != "" ||
+		r.DrainPort != 0 || r.Group != "" || r.Hook != "" || r.Dir != "" || r.Owner != "" {
+		add("Rotation: only the timing (CheckIntervalMinutes, WindowStartHour, WindowEndHour, IdleMinutes, " +
+			"ReadyTimeoutSeconds) can be set; the rest is fixed by the builder")
 	}
 
 	return errors.Join(errs...)
