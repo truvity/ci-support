@@ -1,0 +1,12 @@
+# The wake proxy's alert rules, on a cluster that serves the VictoriaMetrics
+# operator's API (the case's api-versions file).
+wakeProxy:
+  alerts:
+    enabled: true
+    clusterName: example
+npmCache:
+  enabled: false
+buildkitd:
+  enabled: false
+bazelRemote:
+  enabled: false

@@ -1,0 +1,56 @@
+---
+# Source: ci-builders/templates/wake-proxy-alerts.yaml
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: wake-proxy-alerts
+  labels:
+    app.kubernetes.io/name: ci-builders
+    app.kubernetes.io/component: wake-proxy-alerts
+    app.kubernetes.io/managed-by: Helm
+spec:
+  groups:
+    - name: wake-proxy
+      rules:
+        - alert: WakeProxyDown
+          expr: up{job="wake-proxy"} == 0
+          for: 5m
+          labels:
+            k8s_cluster_name: example
+            severity: critical
+          annotations:
+            summary: The BuildKit wake proxy is not answering its metrics scrape
+            description: "The wake proxy ({{ $labels.instance }}) has not answered its /metrics scrape for 5m. A runner's build cannot wake its on-demand builder while the proxy is down. Check the proxy's Auto Scaling group and its target group."
+        - alert: WakeProxyAbsent
+          expr: absent(up{job="wake-proxy", k8s_cluster_name="example"})
+          for: 15m
+          labels:
+            k8s_cluster_name: example
+            severity: critical
+          annotations:
+            summary: The BuildKit wake proxy is not scraped at all
+            description: "No up{job=\"wake-proxy\"} series for 15m: the scrape target is gone, not only down. Check the static scrape target of the proxy's metrics, its DNS name and the proxy's metrics listener on the load balancer."
+        - alert: WakeProxyWakeFailures
+          expr: increase(wake_proxy_wake_failures_total[15m]) > 0
+          labels:
+            k8s_cluster_name: example
+            severity: warning
+          annotations:
+            summary: "The wake proxy failed to wake the {{ $labels.route }} builder"
+            description: "The wake proxy could not start the {{ $labels.route }} builder ({{ $value | humanize }} failed wakes in 15m). Builds on that architecture wait or fail. Check the builder instance (EC2 start errors, capacity, the cache volume) and the proxy's journal."
+        - alert: WakeProxyBuilderUnreachable
+          expr: increase(wake_proxy_dial_failures_total[15m]) > 0 or increase(wake_proxy_resolve_failures_total[15m]) > 0
+          labels:
+            k8s_cluster_name: example
+            severity: warning
+          annotations:
+            summary: "The wake proxy cannot reach the {{ $labels.route }} builder"
+            description: "The wake proxy failed to resolve or dial the {{ $labels.route }} builder ({{ $value | humanize }} failures in 15m) after waking it. The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group."
+        - alert: WakeProxySlowWake
+          expr: (rate(wake_proxy_wake_duration_seconds_sum[30m]) / rate(wake_proxy_wake_duration_seconds_count[30m])) > 120 and rate(wake_proxy_wake_duration_seconds_count[30m]) > 0
+          labels:
+            k8s_cluster_name: example
+            severity: warning
+          annotations:
+            summary: "Waking the {{ $labels.route }} builder is slow"
+            description: "Waking the {{ $labels.route }} builder took {{ $value | humanizeDuration }} on average over 30m (the proxy's wake timeout is 180 s by default). A cold cache volume or a slow instance start makes the first build of a burst wait."

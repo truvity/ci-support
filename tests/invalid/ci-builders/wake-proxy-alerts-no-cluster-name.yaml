@@ -1,0 +1,8 @@
+# refuses: wakeProxy.alerts.clusterName is required
+# Enabled without the cluster's name: refused whether or not the cluster
+# serves the operator's API, so a typo is not hidden by the capability guard.
+wakeProxy:
+  alerts:
+    enabled: true
+npmCache:
+  enabled: false

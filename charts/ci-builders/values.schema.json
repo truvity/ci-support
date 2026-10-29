@@ -557,6 +557,35 @@
       },
       "description": "The read-through npm registry cache."
     },
+    "wakeProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The BuildKit wake proxy's alert rules (the chart runs no proxy).",
+      "properties": {
+        "alerts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "name": {"type": "string", "minLength": 1},
+            "clusterName": {"type": "string"},
+            "clusterLabel": {"type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"},
+            "job": {"type": "string", "minLength": 1},
+            "thresholds": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "down": {"type": "object", "additionalProperties": false, "properties": {"for": {"type": "string", "pattern": "^[0-9]+(s|m|h)$"}}},
+                "absent": {"type": "object", "additionalProperties": false, "properties": {"for": {"type": "string", "pattern": "^[0-9]+(s|m|h)$"}}},
+                "wakeFailures": {"type": "object", "additionalProperties": false, "properties": {"window": {"type": "string", "pattern": "^[0-9]+(s|m|h)$"}}},
+                "builderUnreachable": {"type": "object", "additionalProperties": false, "properties": {"window": {"type": "string", "pattern": "^[0-9]+(s|m|h)$"}}},
+                "slowWake": {"type": "object", "additionalProperties": false, "properties": {"window": {"type": "string", "pattern": "^[0-9]+(s|m|h)$"}, "seconds": {"type": "number", "minimum": 0}}}
+              }
+            }
+          }
+        }
+      }
+    },
     "bazelRemote": {
       "type": "object",
       "properties": {

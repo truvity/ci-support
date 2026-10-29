@@ -1,0 +1,13 @@
+# Enabled on a cluster that does not serve the operator's API: the VMRule is
+# skipped, the render does not fail (this golden renders
+# nothing at all).
+wakeProxy:
+  alerts:
+    enabled: true
+    clusterName: example
+npmCache:
+  enabled: false
+buildkitd:
+  enabled: false
+bazelRemote:
+  enabled: false
