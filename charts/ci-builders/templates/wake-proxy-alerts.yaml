@@ -56,14 +56,18 @@ spec:
           annotations:
             summary: {{ `The wake proxy failed to wake the {{ $labels.route }} builder` | quote }}
             description: {{ printf `The wake proxy could not start the {{ $labels.route }} builder ({{ $value | humanize }} failed wakes in %s). Builds on that architecture wait or fail. Check the builder instance (EC2 start errors, capacity, the cache volume) and the proxy's journal.` $t.wakeFailures.window | quote }}
+        {{- /* Needs the wake proxy from truvity/asg >= v0.9.0: an older proxy has no
+        wake_proxy_connect_failures_total, the series is absent and this rule stays
+        silent. wake_proxy_dial_failures_total is not used: it counts every dial
+        attempt, so it rises on every normal wake. */}}
         - alert: WakeProxyBuilderUnreachable
-          expr: increase(wake_proxy_dial_failures_total[{{ $t.builderUnreachable.window }}]) > 0 or increase(wake_proxy_resolve_failures_total[{{ $t.builderUnreachable.window }}]) > 0
+          expr: increase(wake_proxy_connect_failures_total[{{ $t.builderUnreachable.window }}]) > 0
           labels:
             {{ $l }}: {{ $a.clusterName }}
             severity: warning
           annotations:
             summary: {{ `The wake proxy cannot reach the {{ $labels.route }} builder` | quote }}
-            description: {{ printf `The wake proxy failed to resolve or dial the {{ $labels.route }} builder ({{ $value | humanize }} failures in %s) after waking it. The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group.` $t.builderUnreachable.window | quote }}
+            description: {{ printf `A client's build got no connection to the {{ $labels.route }} builder after the wake and every retry ({{ $value | humanize }} abandoned connections in %s). The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group.` $t.builderUnreachable.window | quote }}
         - alert: WakeProxySlowWake
           expr: (rate(wake_proxy_wake_duration_seconds_sum[{{ $t.slowWake.window }}]) / rate(wake_proxy_wake_duration_seconds_count[{{ $t.slowWake.window }}])) > {{ $t.slowWake.seconds }} and rate(wake_proxy_wake_duration_seconds_count[{{ $t.slowWake.window }}]) > 0
           labels:

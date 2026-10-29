@@ -184,7 +184,7 @@ rules need the series to carry `clusterLabel`.
 | `WakeProxyDown` | critical | the scrape fails for `down.for` (5m) | `up{job}` |
 | `WakeProxyAbsent` | critical | no `up` series for the cluster for `absent.for` (15m) | `up{job,<clusterLabel>}` |
 | `WakeProxyWakeFailures` | warning | any failed wake in `wakeFailures.window` (15m), per `route` | `wake_proxy_wake_failures_total` |
-| `WakeProxyBuilderUnreachable` | warning | any dial or resolve failure after a wake in `builderUnreachable.window` (15m), per `route` | `wake_proxy_dial_failures_total`, `wake_proxy_resolve_failures_total` |
+| `WakeProxyBuilderUnreachable` | warning | a client's build got no builder connection after the wake and every retry, in `builderUnreachable.window` (15m), per `route`; needs the wake proxy from truvity/asg >= v0.9.0, with an older proxy the series is absent and the alert stays silent | `wake_proxy_connect_failures_total` |
 | `WakeProxySlowWake` | warning | the mean wake takes more than `slowWake.seconds` (120) over `slowWake.window` (30m) | `wake_proxy_wake_duration_seconds_sum` / `_count` |
 
 The counters restart with every proxy replacement, so the rules read
