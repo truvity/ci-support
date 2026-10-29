@@ -15,6 +15,8 @@ func one(b ec2.FleetBuilder) map[string]ec2.FleetBuilder {
 
 func TestFleetValidate(t *testing.T) {
 	od := ec2.FleetBuilder{Listener: "buildkit-arm64", InstanceType: "m7g.xlarge", MaxParallelism: 4, Zone: "eu-central-1a"}
+	negVolume := od
+	negVolume.DataVolumeGiB = -1
 	noZone := ec2.FleetBuilder{Listener: "buildkit-arm64", InstanceType: "m7g.xlarge", MaxParallelism: 4}
 
 	cases := []struct {
@@ -26,7 +28,7 @@ func TestFleetValidate(t *testing.T) {
 		{"on-demand", ec2.Fleet{
 			Mode: ec2.ModeOnDemand, Proxy: &ec2.FleetProxy{InstanceType: "t4g.nano"}, Builders: one(od)}, ""},
 		{"no zone", ec2.Fleet{Mode: ec2.ModeOnDemand, Builders: one(noZone)}, "availability zone"},
-		{"negative volume", ec2.Fleet{Builders: one(fb{Listener: "l", InstanceType: "m7g.xlarge", MaxParallelism: 1, Zone: "eu-central-1a", DataVolumeGiB: -1})}, "data_volume_gib"},
+		{"negative volume", ec2.Fleet{Builders: one(negVolume)}, "data_volume_gib"},
 		{"group mode is gone", ec2.Fleet{Mode: "group", Builders: one(od)}, `mode "group"`},
 		{"bad proxy type", ec2.Fleet{Mode: ec2.ModeOnDemand, Proxy: &ec2.FleetProxy{InstanceType: "Nano"}, Builders: one(od)}, "proxy.instance_type"},
 		{"bad arch", ec2.Fleet{Builders: map[string]ec2.FleetBuilder{"s390x": od}}, "amd64 or arm64"},
