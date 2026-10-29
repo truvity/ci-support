@@ -1,0 +1,7 @@
+# refuses: removed `sizes`
+sizes:
+  builder:
+    maxParallelism: 3
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

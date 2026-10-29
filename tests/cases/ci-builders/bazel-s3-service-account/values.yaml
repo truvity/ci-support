@@ -1,8 +1,5 @@
 # bazel-remote's S3 proxy backend with the chart owning the ServiceAccount
 # the Pod Identity association is made against.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

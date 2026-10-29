@@ -1,13 +1,8 @@
 # Architecture
 
 This repository releases the cache-redirect image and the `ci-builders`
-Helm chart as **one versioned unit**. The chart also names two images it
-does not build: the Nix workers' image and the runner image, both still
-published by [truvity/ci-plane](https://github.com/truvity/ci-plane). A
-release here stamps those two by digest from one pinned ci-plane release
-(`CI_PLANE_IMAGES` in `.github/workflows/release.yaml`), so a consumer is
-still transitively digest-pinned to every image the chart can run. This
-document records the load-bearing decisions and why each one holds; it
+Helm chart as **one versioned unit**, so a consumer is transitively
+digest-pinned to the image the chart runs. This document records the load-bearing decisions and why each one holds; it
 moved here from ci-plane with the chart, and ci-plane's history keeps the
 earlier versions.
 
@@ -27,18 +22,15 @@ A `v*` tag releases everything. The release workflow:
    the two halves into one manifest list;
 2. assembles the release images from those bases without executing
    anything (`image/release/`), and stamps each digest into the chart
-   defaults **by key** (`hack/stamp-digests.sh`), so the runner's digest
-   can never land in `nixWorkerImage`;
+   defaults **by key** (`hack/stamp-digests.sh`);
 3. stamps the chart's `version` and `appVersion` from the tag — the
    committed `0.0.0` is a placeholder — and publishes it to
    `oci://ghcr.io/truvity/ci-support/charts/ci-builders`.
 
-Only cache-redirect is built here; the steps above apply to it alone, and
-`nixWorkerImage` and `runnerImage` are stamped with the digests of the
-ci-plane release the workflow pins.
+Only cache-redirect is built here, and it is the only image the chart runs.
 
 A consumer therefore pins **one chart version** and is transitively
-digest-pinned to both images. Every release builds the images: native
+digest-pinned to the image. Every release builds the images: native
 builds with a layer cache made an unchanged base cheap, so the old
 skip-rebuild gate, and its "did `image/` change?" question, is gone.
 The stamp is the compatibility statement: chart X was released against
@@ -236,11 +228,11 @@ wiring in [day-2-operations.md](day-2-operations.md).
 ## The cache doctrine
 
 Every `charts/ci-builders` component is disposable: no backups, zero
-IAM where possible, no backups; losing one costs a re-warm. A dead
-cache degrades to upstream — slower, never broken. buildkitd's PVC is
-the HOT layer only; the WARM layer is `cache-to type=registry` and
-survives builder replacement. Restrictive network defaults: only listed
-namespaces reach the builders.
+IAM where possible; losing one costs a re-warm. A dead
+cache degrades to upstream — slower, never broken. The builders'
+cache volume is the HOT layer only; the WARM layer is `cache-to
+type=registry` and survives builder replacement. Restrictive network
+defaults: only listed namespaces reach the caches.
 
 ## cache-redirect: a hit is a redirect, not a stream
 
@@ -596,266 +588,19 @@ cannot be reached fails the resolution, which is why a client probes
 `/maven/` and `/gradle/cache/` before it points a build at them. npm, yarn
 and pnpm do not fall through either (`/npm/-/ping` and `/npm/` are the probes).
 
-## Persistent Nix workers are CI-only and separate from BuildKit
+## What v1.0.0 removed
 
-The optional `nixWorkers` plane is one native StatefulSet per
-architecture, each with its own RWO `/nix` store. It deliberately does
-not reuse BuildKit pods or PVCs: rootless BuildKit and a privileged,
-sandboxed multi-user Nix daemon have incompatible security models, and
-sharing CPU, disk, GC and failure domains would let one cache evict or
-stall the other.
-
-The workers run their own image (`image/nix-worker`, split from the
-runner image on 2026-09-24). An init container imports the image's Nix
-closure into the persistent alternate-root store through Nix itself,
-including the validity database; raw copying or mounting an empty PVC
-over the baked store would produce an unusable image. The worker then
-runs `nix-daemon` with build users and exposes one machine login: `nix`,
-over the ssh-ng protocol, forced to `nix-daemon --stdio`. `sshd` forbids
-passwords, forwarding, TTYs and arbitrary commands. (v5.0.0 removed the
-legacy `nixremote` login, whose force-command accepted only
-`nix-store --serve`.)
-
-The estate supplies only the OpenBao HTTPS CA, one or more public keys
-of the environment's SSH user CA (exported, for example, as
-`sshUserCaPublicKeys`; the workers trust the same keys), and the public
-key of its SSH HOST CA, which the runners trust as an `@cert-authority`
-line. No host key is stored anywhere: each worker pod generates its own
-(see [below](#worker-host-certificates-and-ephemeral-host-keys)).
-Client private keys never enter Helm, OpenBao KV, ESO or Kubernetes
-Secrets: the runner generates an Ed25519 key in its pod-local
-`emptyDir`, exchanges a narrowly projected ServiceAccount JWT for an
-OpenBao SSH user certificate of at most one hour, and publishes the
-remote machines file only after validating that certificate: the one
-principal, the expected CA, the generated key, the requested lifetime,
-no critical options and no extension except `permit-pty` (signing roles
-commonly add it; the workers' `PermitTTY no` makes it inert).
-
-**Signing is per job, not per pod.** One hour is the signing role's
-ceiling and a warm runner idles far longer, so a certificate signed when
-the pod started would be expired by the time its job runs. The init
-container signs for a cold pod; an `ACTIONS_RUNNER_HOOK_JOB_STARTED`
-script re-runs the same setup as `runner` before the job's first step.
-That is why the runner container mounts the projected token and why its
-`~/.ssh` and `/etc/nix-builders` are writable `emptyDir`s: workflow code
-can read the token and the key, and could sign certificates of its own
-for the life of its pod. Namespace-only worker ingress, the one-hour
-certificate and the ephemeral single-job pod are the boundary; the token
-carries only the SSH signing policy. A job that runs longer than the
-certificate keeps building locally once its remote connections need a
-fresh certificate.
-
-OpenBao/network/signing failure publishes an empty machines file and
-starts the runner (or the job) normally, so local Nix remains the outage
-path. Stable host verification is mandatory and independent from
-client-certificate trust. NetworkPolicy admits only the listed runner
-namespaces. The worker has no service-account token, but egress remains
-available because fixed-output derivations must fetch sources; treat
-code admitted to this CI plane as trusted and keep the privileged
-workers on a dedicated, tainted build pool. Engineer keys, public
-ingress and workstation integration are intentionally absent: these
-workers are shared CI infrastructure, not developer machines.
-
-ARC adds a machines file and `builders-use-substitutes`, but does not set
-`max-jobs = 0`; local execution remains the outage fallback. The shared
-stores are caches, not artifact authorities or backups. Access by two
-organizations is an explicit shared-cache trust decision: either CI
-identity can submit writes to the same architecture store.
-
-### Worker host certificates and ephemeral host keys
-
-`nixWorkers.hostCertificate` is ON by default since v5.0.0. The worker
-generates an **ephemeral ed25519 host key per pod** at container start
-(`nix-worker-entrypoint.sh`, into the memory-backed runtime `emptyDir`;
-a fresh one on every container start, whatever an earlier container of
-the same pod left there discarded first) and signs it with an OpenBao
-SSH secrets engine — `cert_type=host`, `valid_principals` set to the
-worker's own DNS name, COMPUTED by the chart from the release namespace
-(`nix-worker-<arch>.<namespace>.svc.cluster.local`) rather than taken as
-a raw value, so a public repository never invites an estate-specific
-hostname into a values file. A client that trusts the signing CA's public
-key as an `@cert-authority` line (`arc-runners`'
-`nixBuilders.knownHosts.certAuthorities`) then trusts every worker that
-CA signs for. Nothing trusts the key itself, only the CA's signature on
-it, so a key that dies with its pod is strictly less to protect than a
-stable one in a Secret, and there is nothing to rotate: every restart is
-a rotation. The readiness probe (`nix-worker-healthcheck --readiness`)
-reports ready only while a certificate exists, parses, has at least
-`minRemaining` of validity left, AND certifies exactly this pod's host
-key — a fresh certificate for some other key is refused like a missing
-one.
-
-The static host key (`nixWorkers.ssh.existingSecret`, no default since
-v5.0.0) remains only as the explicit `hostCertificate.enabled: false`
-path: without a certificate a client can only pin the key, so it has to
-be stable, and the runners then set `nixBuilders.knownHosts.pinned:
-true`.
-
-Signing and renewal happen in the SAME container as sshd, not a separate
-init container: `nix-worker-entrypoint.sh` signs once before starting
-sshd (**fail-closed** — a failure here exits the container, because a
-worker's host identity has no degraded mode a client can fall back to
-mid-connection, unlike the runner-side user certificates below, which
-fail open) and then runs a background loop that re-signs every
-`renewEvery` (must stay under `certificateTTL`, checked at render time)
-and sends sshd SIGHUP. OpenSSH re-execs itself on SIGHUP, re-reading
-`sshd_config` and reloading a replaced `HostCertificate` from disk
-without dropping an already-established session — verified directly
-against this image's `sshd_config` (same PID throughout; the presented
-certificate's Key ID changed after the signal). A renewal failure logs
-and retries with backoff; it never tears down a running sshd whose
-current certificate is still valid.
-
-Signing is a SIBLING binary to the runner-side `nix-worker-client`
-(`image/nix-worker-host-cert`), not a mode flag on it: the two have
-unrelated validation policies (host vs. user certificates, exact
-principals vs. one fixed principal, no extensions at all vs.
-permit-pty-only), unrelated failure contracts (fail-closed here,
-fail-open there) and unrelated deployment targets (a persistent worker
-pod vs. an ephemeral runner pod). See that binary's own top-of-file
-comment for the full reasoning.
-
-The machine login, `nix` — the ssh-ng protocol via `nix-daemon
---stdio` — is gated by `AuthorizedPrincipalsFile` content the chart
-renders from `nixWorkers.accounts.nix.principals` (`[ci-nix]` by default
-since v5.0.0; an empty list is refused, since it would leave no machine
-login at all).
-`sshd_config`'s `Match User nix` block is baked into every image
-unconditionally; whether the account is ever reachable is decided by
-whether `AllowUsers` gains `nix`, which `nix-worker-entrypoint.sh`
-computes at container start from that principals file. `trusted-users`
-in the Nix daemon config gains `nix` only when
-`nixWorkers.accounts.nix.trusted` is set — trusted users can import
-store paths WITHOUT signature verification, which is what Nix's
-sandboxing model exists to prevent. A remote build worker needs it
-(runners upload unsigned derivation inputs), so it is on by default
-since v5.0.0 — the same trust the removed `nixremote` login always had.
-
-### Runners over ssh-ng
-
-`arc-runners`' `nixBuilders.login.{user, principal, protocol}` chooses
-the machine login; since v5.0.0 the defaults are the only one the
-workers have: `user: nix`, `principal: ci-nix` (which must be in the
-worker's `nixWorkers.accounts.nix.principals` list — not necessarily
-`nix` itself, `AuthorizedPrincipalsFile` can require a narrower name
-than the account), `protocol: ssh-ng`. `nixBuilders.openbao.sshRole`
-(default `ci-nix`) names the signing role that issues for that
-principal. v5.0.0 removed the legacy `nixremote`/`ssh://` login and the
-deprecated top-level `sshUser` alias of `login.user`; setting `sshUser`
-is a render-time failure (`templates/removed-values.yaml`), not a
-silently ignored key.
-
-`nix-worker-client` validates a returned certificate against the
-configured principal and protocol: one principal, no extension but
-`permit-pty`. Under `ssh-ng` it additionally allows ONE critical option,
-`force-command`, and only when its value is exactly `nix-daemon --stdio`
-— what the worker's `Match User nix` block already forces server-side
-(`image/sshd_config`). This exists because OpenBao/Vault SSH roles apply
-their own `default_critical_options` regardless of what the request
-names, and this role's grant refuses a request that names
-`critical_options` at all, so the client can neither ask for
-`force-command` nor suppress it — it can only check what came back. A
-certificate forcing anything else is refused before any credential is
-published, the same fail-open contract as every other rejection here:
-local Nix builds remain available.
-
-`nixBuilders.knownHosts.pinned` (default `false` since v5.0.0) is
-independent of the login: unpinned, the runner's `known_hosts` is built
-ENTIRELY from `certAuthorities` (the workers' host CA line) and the
-pinned Secret is not mounted; `true` is the explicit static-key path,
-pinning each worker's static key from a Secret (for workers with
-`hostCertificate.enabled: false`). Unpinned with an empty
-`certAuthorities` list is refused at render time — that combination
-would trust nothing.
-
-**Verified directly**, no OpenBao involved: the real `nix-worker`
-image, a locally generated host key, a local CA standing in for the
-signing role (`ssh-keygen -s ‹ca› -n ci-nix -O force-command="nix-daemon
---stdio" -O clear -O extension:permit-pty`), and the worker started with
-`nixWorkers.accounts.nix.{principals: [ci-nix], trusted: true}`'s
-container-level equivalent. `nix store ping --store 'ssh-ng://nix@…'`
-reports `Trusted: 1`; `nix build --store 'ssh-ng://nix@…' -f …` executes
-the derivation ON the worker and returns its real output; the worker's
-own daemon log reads `accepted connection from pid …, user nix
-(trusted)`. Rebuilt with `trusted: false`, the same store reports
-`Trusted: 0` and `nix copy --to` an unsigned path is refused
-(`lacks a signature by a trusted key`) — the exact restriction the
-values comment for `nixWorkers.accounts.nix.trusted` describes. An
-explicit command and a `-t` PTY request are both silently replaced by
-the forced command (`ForceCommand` overrides whatever the client asked
-for), and `PermitTTY no` refuses the pseudo-terminal. **No worker-side
-change was needed for any of this**: `Match User nix`'s `ForceCommand
-nix-daemon --stdio`, unqualified by `NIX_REMOTE`, reads the entrypoint's
-own exported `NIX_CONFIG` (including `trusted-users`) because OpenSSH
-session children inherit the environment `sshd` itself was started
-with — a real, load-bearing side effect of *when* the entrypoint script
-exports it, not a documented daemon feature, which is why it is written
-down here rather than left to be rediscovered.
-
-### People, over opkssh (the people pilot)
-
-Phases 1-2 above are machines only (CI runners, an OpenBao-signed
-certificate). This pilot adds a SEPARATE, independent credential path
-for PEOPLE onto the same `nix` account, plus a new `admin` account no
-certificate ever reaches: OpenPubkey SSH (opkssh), the same
-no-CA OIDC sign-in `truvity/tailscale`'s EC2 subnet routers already use.
-`AuthorizedKeysCommand` and `TrustedUserCAKeys`/`AuthorizedPrincipalsFile`
-are independent sshd mechanisms tried in turn for pubkey auth, so this
-never displaces or reorders phases 1-2 — a worker can run every
-combination of `accounts.nix`, `hostCertificate` and `opkssh` at once,
-and a worker with `opkssh.archs` empty (the default) renders exactly as
-it did before this feature existed.
-
-`opkssh`, `opksshuser` and the `admin` account are baked into every
-`nix-worker` image unconditionally (`image/nix-worker/Dockerfile`) —
-whether either is ever REACHABLE is decided entirely by
-`nixWorkers.opkssh.archs`, an explicit allow-list into `nixWorkers.archs`
-(the same shape as `truvity/tailscale`'s `opksshEnvs`): naming an
-architecture there is "one pilot worker", every other architecture's
-StatefulSet shares the image and the opkssh ConfigMap but never sets
-`NIX_WORKER_OPKSSH_ENABLED`, so `AllowUsers` never gains `admin` and
-`/etc/opk/{providers,auth_id}` render empty (`nix-worker-entrypoint.sh`).
-
-The OWN install steps (never opkssh's upstream `install-linux.sh`) for
-the same reason `truvity/tailscale` v1.11.0 stopped calling it: that
-script's OS-family detection does not recognize every base image, and
-owning the handful of steps it would have taken — create `opksshuser`,
-install the checksum-verified binary, write the sshd
-`AuthorizedKeysCommand` drop-in — costs less than depending on it.
-
-`/etc/opk` is a writable `emptyDir` in the chart, not the image's own
-directory: `readOnlyRootFilesystem: true` means opkssh's hardcoded
-`/etc/opk/{providers,auth_id}` paths (there is no flag to relocate them)
-could never be written at container start otherwise — the same reason
-`$runtime_dir` under `/run/nix-worker` exists for the CA-certificate
-files phases 1-2 use. `nix-worker-entrypoint.sh` rebuilds both files
-from the chart's ConfigMap every start, exactly the "empty means nobody"
-default the principals ConfigMap already establishes.
-
-`admin` is the one account on this worker with a real interactive shell
-and `sudo` (passwordless: there is no password authentication method to
-enter one against). `Match User admin` in `image/sshd_config` sets
-`ForceCommand none` — overriding the GLOBAL `ForceCommand` (`nologin`
-since v5.0.0 removed the legacy `nixremote` shim it used to be) that
-would otherwise force `admin`'s session through it too — and `PermitTTY yes`, the one place this worker grants a real
-terminal. `nix` stays `ForceCommand nix-daemon --stdio` regardless of
-which credential (certificate or opkssh) reached it: opkssh only adds a
-SECOND way in, never a different account or a different forced command.
-
-Trust in `nix.conf`'s `trusted-users` (`nixWorkers.accounts.nix.trusted`)
-is an EXISTING, independent toggle (phase 1) opkssh does not touch,
-override, or gate on: it is a property of the ACCOUNT (`nix`), not of
-which credential mechanism reached it, so it applies identically to a
-certificate-authenticated session and an opkssh-authenticated one.
-**This installation keeps `nix` trusted** (an install that already sets
-`accounts.nix.trusted: true` for its own CI principal, as the pre-existing
-value comment describes) — opkssh does not narrow this. That means
-EVERYONE who can reach `nix`, by either credential, can import a store
-path without signature verification, which CI's own builds then trust
-implicitly. Whether that population should stay this wide, or narrow to
-whoever also operates CI, is a decision for each installation's own
-identity policy to name explicitly (see the consuming estate's own
-access-control docs) — this chart does not decide it.
+The chart used to run the BuildKit builders in the cluster (one StatefulSet
+per architecture, plain or behind mutual TLS) and persistent Nix remote
+workers (one StatefulSet per architecture, an `ssh-ng` login on a user-CA
+certificate, ephemeral host keys signed by an SSH host CA, and an opkssh
+people pilot). Both are gone, together with the group mode of
+`pkg/buildkit/ec2` (an Auto Scaling group per builder with a warm pool). The
+builders are `pkg/buildkit/ec2`'s on-demand instances behind a wake proxy
+([buildkit-on-ec2.md](buildkit-on-ec2.md)); builds that need Nix fetch through
+the cache-redirect `/nix` front-end. What stays in the chart is the trust the
+builders rely on ([mtls.md](mtls.md)) and the caches. The earlier decisions
+are in this document at `v0.4.1`.
 
 ## The image doctrine
 

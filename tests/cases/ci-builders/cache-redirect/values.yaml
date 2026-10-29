@@ -2,9 +2,6 @@
 # ServiceAccount the estate wires), both front-ends under the one prefix a
 # runneridentity CacheRedirect role grants, the runner namespaces allowed to
 # reach it, a metrics agent from another namespace, and its PodMonitor.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

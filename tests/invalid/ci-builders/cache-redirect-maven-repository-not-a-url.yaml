@@ -1,8 +1,5 @@
 # refuses: /cacheRedirect/maven/repositories
 # An upstream is an http(s) base URL.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

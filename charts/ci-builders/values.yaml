@@ -1,48 +1,20 @@
-# ci-builders — the in-cluster CI builder and cache plane.
+# ci-builders: the CI cache plane and the TLS trust of the BuildKit builders.
 #
-# Named for where it is going, not only for what it holds today: the
-# Go module proxy left in 2.0.0, and moving the nix, npm and Bazel
-# caches to truvity/ci-cache is tracked separately. What cannot leave
-# is the pair that builds — buildkitd and the nix workers.
+# The builders themselves run OUTSIDE the cluster (pkg/buildkit/ec2: one
+# on-demand instance per architecture behind a wake proxy); this chart
+# issues what they and their clients trust (the client CA, the Fargate
+# runners' client certificate, the builders' server certificates pushed to a
+# store) and runs the caches the runners read through (cache-redirect,
+# bazel-remote, the npm cache). The in-cluster buildkitd StatefulSets and
+# the Nix workers were removed in v1.0.0 (CHANGELOG.md).
 #
 # Image references are split {registry}/{repository}:{tag} so an estate
 # with an ECR pull-through cache overrides ONLY `registry` per
 # component family and inherits everything else. Empty registry means
 # the upstream registry (docker.io / ghcr.io).
 
-# The runner image. The nix workers run it, so its nix and its SSH
-# surface are the ones a remote build lands on.
-# `digest` is stamped by the release workflow; consumers override
-# `registry` (e.g. "123456789012.dkr.ecr.eu-example-1.amazonaws.com/github")
-# and inherit the digest, staying transitively digest-pinned by the
-# chart version.
-runnerImage:
-  registry: ghcr.io
-  repository: truvity/ci-plane/runner
-  digest: "" # sha256:… — stamped at release; empty renders the tag instead
-  tag: latest
-
-# The nix workers' own image (2026-09-24). They ran the RUNNER image
-# until now, with Kubernetes picking the role by overriding the command.
-# That worked and it meant neither half could be tuned: a worker wants a
-# store and an sshd, and was carrying a docker client, buildx, devbox,
-# goreleaser and two cache clients for nothing.
-#
-# Both images pin the SAME nix, and ci-plane's hack/nix-parity.sh refuses
-# a release where they disagree -- remote building is a protocol between
-# two nix installations, and a mismatch surfaces as a confusing build
-# rather than as a version error.
-#
-# Required whenever nixWorkers is enabled (v5.0.0 removed the fallback
-# to runnerImage: the runner image no longer carries the worker role).
-nixWorkerImage:
-  registry: ghcr.io
-  repository: truvity/ci-plane/nix-worker
-  digest: "" # sha256:… — stamped at release; empty renders the tag instead
-  tag: latest
-
 # cache-redirect's own image (`cacheRedirect` below): a static Go binary
-# on distroless. Stamped at release like the two above.
+# on distroless. Stamped at release.
 cacheRedirectImage:
   registry: ghcr.io
   repository: truvity/ci-support/cache-redirect
@@ -59,8 +31,7 @@ cacheRedirectImage:
 
 # NODE CLASSES (v7.0.0): where a pod may run, as data YOU define. A class
 # is a name you choose, mapped to a nodeSelector and/or tolerations; a
-# preset, a per-architecture block or the whole release then refers to the
-# NAME. The chart ships no class and knows no pool, label or taint of any
+# preset or the whole release then refers to the NAME. The chart ships no class and knows no pool, label or taint of any
 # platform. Map a class to whatever your nodes carry:
 #
 #   nodeClasses:
@@ -70,258 +41,35 @@ cacheRedirectImage:
 #         - {key: example.com/build, value: "true", effect: NoSchedule}
 #     cache-plane: {}           # a class that places nothing
 #
-# The class used for a builder carries the pool, not the architecture:
-# the chart adds `kubernetes.io/arch` itself for buildkitd and the Nix
-# workers. A class a preset or a values file names but you did not define
-# is a render error (a typo must not schedule a builder anywhere); define
-# it empty, as `cache-plane` above, to place nothing. The presets
-# (presets/preview.yaml, presets/stable.yaml, presets/nix-workers.yaml)
-# name `builders-arm64`, `builders-amd64` and `cache-plane`.
+# A class a preset or a values file names but you did not define is a render
+# error (a typo must not schedule a pod anywhere); define it empty, as
+# `cache-plane` above, to place nothing. The presets (presets/preview.yaml,
+# presets/stable.yaml) name `cache-plane`.
 nodeClasses: {}
 
-# The class of every component that has no placement of its own: the
-# caches, the Go module proxy, cache-redirect, and buildkitd / the Nix
-# workers for an architecture whose `scheduling.<arch>.nodeClass` is
-# unset. Empty: no class. An explicit `nodeSelector` / `tolerations`
+# The class of the caches (bazel-remote, the npm cache). Empty: no class. An explicit `nodeSelector` / `tolerations`
 # below, when not empty, wins over the class's own for that one key.
 nodeClass: ""
-
-# SIZES (v7.0.0): a taxonomy of builder sizes, as data YOU define. A size
-# is a name you choose, mapped to the keys a builder takes: for buildkitd
-# `resources` and `maxParallelism`, for the Nix workers `resources`,
-# `maxJobs` and `cores`. A builder picks one by name with `size:`
-# (buildkitd.size, nixWorkers.size). The chart ships none. A size REPLACES
-# the component's own value for each key it sets (the chart's defaults for
-# those keys cannot be told from yours, so a merge would leave stray
-# defaults behind); a key the size leaves out keeps the component's. An
-# undefined name is a render error.
-#
-#   sizes:
-#     medium:
-#       maxParallelism: 4
-#       resources:
-#         requests: {cpu: "1", memory: 4Gi}
-#         limits: {memory: 10Gi}
-#
-#   buildkitd:
-#     size: medium
-sizes: {}
 
 nodeSelector: {}
 tolerations: []
 storageClassName: ""
 
+# The TLS trust of the BuildKit builders: the ONE client CA and the client
+# identities issued from it. The key keeps the name of the in-cluster
+# builders it used to configure (removed in v1.0.0); only `enabled` and
+# `mtls.enabled` / `mtls.clientCA` are left under it, and any other key
+# fails the render (templates/removed-values.yaml).
 buildkitd:
-  # Rootless BuildKit builders, one single-replica StatefulSet per arch,
-  # registered client-side as one buildx builder (--driver remote) so
-  # multi-platform builds split natively, no QEMU. The daemon never
-  # ships to runners — client-only docker + buildx live in the runner
-  # image. StatefulSet because the PVC is the HOT layer cache and two
-  # daemons must never share a store; the WARM layer is cache-to
-  # type=registry and survives builder replacement.
+  # false = render nothing under buildkitd.
   enabled: true
-  archs: [arm64, amd64]
-  image:
-    registry: docker.io
-    repository: moby/buildkit
-    # renovate: datasource=docker depName=moby/buildkit
-    tag: v0.33.0-rootless
-  initImage:
-    registry: docker.io
-    repository: library/busybox
-    tag: "1.38"
-  cacheSize: 50Gi
-  # Cap on the build steps one daemon runs at once, rendered as
-  # `--oci-max-parallelism=<n>`. UNSET by default: no flag, buildkitd
-  # runs as many steps as its clients send. Without a cap, a burst of
-  # concurrent builds multiplies the working set until the container
-  # limit OOM-kills the daemon and every build on it fails together
-  # (12 concurrent builds, 2026-10-11). Set a positive integer sized to
-  # the memory limit below; excess steps queue instead of dying.
-  # maxParallelism: 4
-  # Probes: all three run `buildctl debug workers` against the daemon.
-  # Readiness takes the builder out of its Service while it cannot answer.
-  # Liveness restarts the container when it STAYS unable to: a builder
-  # starved of CPU by a burst of builds stops answering and does not
-  # recover by itself, so every client fails until someone deletes the
-  # pod. OFF by default, because a restart kills the builds in flight (an
-  # outage of that kind kills them all anyway, and for hours). With it on,
-  # the container is restarted after failureThreshold x periodSeconds
-  # (180s) of failed checks, and the startup probe holds liveness off until
-  # the daemon has answered once: a restart can take minutes to load the
-  # cache index, and failureThreshold x periodSeconds here is how long it
-  # may take (600s) before the kubelet gives up on it. Liveness needs
-  # startup; the chart refuses one without the other.
-  probes:
-    readiness:
-      initialDelaySeconds: 5
-      periodSeconds: 30
-      # The kubelet's default is 1s, which a busy daemon misses while it
-      # is still serving builds.
-      timeoutSeconds: 5
-    liveness:
-      enabled: false
-      periodSeconds: 30
-      timeoutSeconds: 10
-      failureThreshold: 6
-    startup:
-      enabled: false
-      periodSeconds: 30
-      timeoutSeconds: 10
-      failureThreshold: 20
-  resources:
-    # No CPU limit: builds burst to whatever the node has free; the
-    # request is scheduling headroom only. A node with few cores takes the
-    # limit from the estate (`resources.limits.cpu`): a burst that takes
-    # every core starves the kubelet, and the node, not just the builder,
-    # stops answering.
-    #
-    # Sized from an OBSERVED build peak, not from idle. The 2026-08-27
-    # sizing (500m/1.5Gi request, 3Gi limit) read idle RSS at ~58Mi and
-    # assumed the layer cache stayed on the PVC. Both premises are
-    # false in service: a builder holds its cache index in memory
-    # (arm64 measured at 2085Mi with the PVC 77% full), and on a
-    # DEDICATED pool Karpenter sizes the node from the REQUEST -- so
-    # 1.5Gi bought a .medium, whose 3.17Gi allocatable the 3Gi limit
-    # then claimed in full. A pod permitted to reach the node's whole
-    # allocatable is not a pod with headroom; it is the guaranteed OOM
-    # victim.
-    #
-    # What that cost: buildkitd-amd64 OOMKilled (exit 137) partway
-    # through a JS image build, every time. A dead server reaches the
-    # client as "rpc error: code = Unavailable ... EOF", so the symptom
-    # names the connection and not the memory -- it read as a network
-    # fault for a day (2026-09-05).
-    #
-    # 4Gi of request moves the pod onto a .large (8Gi raw, ~7.1Gi
-    # allocatable) with no change to the estate's pool categories, and
-    # the 6Gi limit leaves ~1Gi for kubelet and the system daemons.
-    requests:
-      cpu: 1000m
-      memory: 4Gi
-      ephemeral-storage: 2Gi
-    limits:
-      memory: 6Gi
-      ephemeral-storage: 10Gi
-  networkPolicy:
-    # Only listed namespaces may reach the builders: your runner
-    # namespaces, one per arc-runners release. REQUIRED while the policy
-    # is on, and empty by default -- a builder that admits nobody cannot
-    # work, so values.schema.json refuses the empty list rather than
-    # rendering a policy that silently locks every runner out. Set
-    # `enabled: false` to run without a policy.
-    enabled: true
-    consumerNamespaces: []
-    # Extra ingress beside consumerNamespaces, one additive NetworkPolicy
-    # per entry (policies union), for a peer the consumer namespaces do not
-    # describe. Empty by default. Each entry: `name` (the policy's name),
-    # `from` (NetworkPolicyPeer objects, as given), optional `annotations`
-    # and `arch` (one architecture's pods only). The port is the builder's.
-    #
-    #   additionalIngress:
-    #     - name: buildkitd-from-router
-    #       annotations: {}
-    #       from:
-    #         - namespaceSelector: {matchLabels: {example.com/router: "true"}}
-    #           podSelector: {matchLabels: {app.kubernetes.io/name: router}}
-    additionalIngress: []
-  # The name of a size under `sizes` above; empty applies none.
-  size: ""
-  # Annotations for the builder pods. Empty by default: no platform
-  # annotation is assumed. A builder mid-build is not migratable state, so
-  # an autoscaler that consolidates nodes needs the annotation that stops
-  # it (Karpenter: `karpenter.sh/do-not-disrupt: "true"`, which
-  # presets/karpenter.yaml sets).
-  podAnnotations: {}
-  # Per-arch scheduling override. Empty = the chart default
-  # (kubernetes.io/arch selector + the release-wide placement above). An
-  # estate whose arches live on different pools names a class for each:
+  # mutual TLS. OFF by default: nothing below renders.
   #
-  #   scheduling:
-  #     arm64: {nodeClass: builders-arm64}
-  #     amd64: {nodeClass: builders-amd64}
-  #
-  # or writes the nodeSelector / tolerations wholesale (the block REPLACES
-  # the default when present; the arch selector is then yours to write).
-  scheduling:
-    arm64: {}
-    amd64: {}
-
-  # mutual TLS. OFF by default: nothing below renders and the
-  # plain builders above are untouched.
-  #
-  # WHY A SECOND SET OF BUILDERS, NOT A FLAG ON THE FIRST. buildkitd's TLS
-  # is one setting for the whole process: --tlscert/--tlskey/--tlscacert
-  # wrap EVERY tcp:// --addr in the same tls.Config (cmd/buildkitd,
-  # getListener; only unix:// sockets stay plain). One daemon cannot serve
-  # plain TCP to the runners that have not moved yet and mTLS to the ones
-  # that have, and two daemons cannot share one cache directory. So the
-  # transition is a second, TLS-only StatefulSet per arch, with its own
-  # cache volume (cold at first; the warm layer is cache-to
-  # type=registry), beside the plain one:
-  #
-  #   1. enabled: true         both sets run; clients move at their pace
-  #                            (plain endpoint -> mTLS endpoint is a client
-  #                            setting, and reverting it is the rollback).
-  #   2. retirePlain: true     once no client uses the plain endpoint, the
-  #                            plain StatefulSets, Services and policies go
-  #                            (their cache volumes are left to the PVC
-  #                            retention of the cluster; delete by hand).
-  #
-  # Objects are named buildkitd-mtls-<arch> and labelled
-  # app.kubernetes.io/name: buildkitd-mtls, so a plain Service can never
-  # select a TLS pod (nor the reverse).
-  #
-  # Certificates are re-read only when the daemon starts: a renewed server
-  # certificate reaches buildkitd with the next pod restart, which must
-  # happen before the old certificate expires (see docs/mtls.md).
-  #
-  # IN PLACE (mode: inPlace). The other way to the same end: no second
-  # set. The plain StatefulSet buildkitd-<arch> is itself changed to serve
-  # mutual TLS (the certificate and client CA mounted, --tls* set, the plain
-  # tcp listener gone), keeping its Service, its cache volume (warm) and its
-  # node, so nothing is added and the cache survives. There is no period in
-  # which both kinds are served: every client must dial with TLS from the
-  # moment the pod restarts, so it is switched in the same change as the
-  # clients (the runners). Rolling back is switching mode back to parallel
-  # (the plain listener returns, the cache still there) and the clients
-  # back with it. retirePlain does not apply. A renewed server certificate
-  # restarts the pod by itself when stakater/Reloader runs in the cluster
-  # (reloader.enabled, the default, adds its annotations in this mode).
+  # The builders accept a client only when its certificate chains to the ONE
+  # client CA (--tlscacert: the daemon then requires and verifies a client
+  # certificate). Their own server certificates are externalBuilders'.
   mtls:
     enabled: false
-    # parallel (default): TLS builders beside the plain ones (the sequence
-    # above). inPlace: the plain builders become the TLS ones.
-    mode: parallel
-    retirePlain: false
-    # inPlace only: annotate the StatefulSets for stakater/Reloader
-    # (secret.reloader.stakater.com/reload on the server certificate Secret,
-    # configmap.reloader.stakater.com/reload on the client CA ConfigMap).
-    # Harmless where no Reloader runs; then restart by hand (docs/mtls.md).
-    reloader:
-      enabled: true
-    # The server certificates (cert-manager), one per arch, mounted at
-    # /etc/buildkit/tls. The names are estate facts and belong to the
-    # estate's values; so does the issuer.
-    serverCertificate:
-      # false = bring your own: a Secret named buildkitd-mtls-<arch>-tls
-      # with tls.crt and tls.key must exist in the release namespace.
-      create: true
-      issuerRef:
-        name: ""
-        kind: ClusterIssuer
-        group: cert-manager.io
-      # dnsNames per arch: the names clients dial (the SNI the gateway
-      # routes on). The first one is also the certificate's common name.
-      #   dnsNames:
-      #     arm64: [buildkitd-arm64.example.private]
-      #     amd64: [buildkitd-amd64.example.private]
-      dnsNames: {}
-      duration: 2160h
-      renewBefore: 720h
-      privateKey:
-        algorithm: ECDSA
-        size: 384
     # The ONE client CA: the only authority the builders accept client
     # certificates from (--tlscacert). Dedicated, so a certificate the
     # estate's general private CA issues for some other workload does not
@@ -386,12 +134,6 @@ buildkitd:
       #      kmsKeyId: ""                      # empty: the provider's default key
       #      tags: {}
       #      caPem: ""                         # required while push.enabled
-    networkPolicy:
-      # Who may reach the TLS builders: buildkitd.networkPolicy.
-      # consumerNamespaces (the same runners) and these additive
-      # entries, e.g. the private gateway's namespace. Same entry shape
-      # as buildkitd.networkPolicy.additionalIngress.
-      additionalIngress: []
 
 # The TLS material of BuildKit builders that run OUTSIDE this cluster, on
 # machines of their own (pkg/buildkit/ec2), which read it from a store the
@@ -406,8 +148,8 @@ externalBuilders:
   enabled: false
   archs: [arm64, amd64]
   serverCertificate:
-    # The same issuer as buildkitd.mtls.serverCertificate, so a client
-    # verifies either kind of builder against one CA bundle.
+    # Any issuer the clients trust: the Fargate runners verify the builders
+    # against the private roots bundle of the issuer.
     issuerRef:
       name: ""
       kind: ClusterIssuer
@@ -449,184 +191,6 @@ externalBuilders:
     # Empty: the provider's default key.
     kmsKeyId: ""
     tags: {}
-
-nixWorkers:
-  # Persistent remote Nix builders, one native worker per architecture.
-  # Disabled by default because enabling requires at least one public key
-  # of the OpenBao SSH user CA the runners sign on
-  # (`ssh.trustedUserCAKeys`, the same keys as arc-runners'
-  # nixBuilders.openbao.sshCAPublicKeys) and, with host certificates on
-  # (the default), the OpenBao route the workers sign their own host keys
-  # on (`openbao.*`). Client private keys are ephemeral and never enter a
-  # Secret; with host certificates on, neither does the host key.
-  enabled: false
-  archs: [arm64, amd64]
-  ssh:
-    # The static host key, read ONLY when hostCertificate.enabled is
-    # false: without a certificate a client can only pin the key, so it
-    # has to be stable across restarts, and it lives in this Secret.
-    # REQUIRED in that mode, no default (v5.0.0). With host certificates
-    # on (the default) the worker generates an ephemeral host key per
-    # pod instead and nothing is mounted from here.
-    existingSecret: ""
-    hostPrivateKeyKey: ssh_host_ed25519_key
-    trustedUserCAKeys: []
-
-  # ServiceAccount + projected OpenBao token (host certificates, phase
-  # 1). Created and bound to the pod ONLY when hostCertificate.enabled
-  # below: an install that leaves it off keeps the worker's current
-  # identity posture exactly (automountServiceAccountToken: false, no
-  # serviceAccountName at all) -- this section changes nothing for it.
-  serviceAccount:
-    create: true
-    name: nix-worker
-    # ~1h: long enough that a renewal a few minutes late (backoff, a
-    # slow OpenBao) does not lose the token mid-retry; short enough that
-    # kubelet keeps rotating it for the life of the pod.
-    tokenExpirationSeconds: 3600
-
-  # Host certificates: the worker generates an EPHEMERAL ed25519 host key
-  # per pod at startup (never stored in a Secret or anywhere else) and
-  # signs it with an OpenBao SSH secrets engine, so a client's
-  # known_hosts trusts one `@cert-authority` line instead of pinning a
-  # host key (charts/arc-runners' nixBuilders.knownHosts.certAuthorities,
-  # which is what actually consumes this). ON by default since v5.0.0,
-  # which makes `openbao.*` below required whenever the workers are
-  # enabled. `enabled: false` is the explicit static-key path:
-  # `ssh.existingSecret` above then supplies a stable host key clients
-  # pin (arc-runners' nixBuilders.knownHosts.pinned: true).
-  hostCertificate:
-    enabled: true
-    # Re-signed this often by a background loop in the SAME container
-    # (nix-worker-entrypoint.sh) that then SIGHUPs sshd -- OpenSSH
-    # re-executes on SIGHUP and reloads a replaced HostCertificate
-    # without dropping an established session. Must stay well under
-    # certificateTTL: a renewal landing after the current certificate
-    # has already expired is a worker no client can still reach. The
-    # chart refuses to render otherwise (templates/nix-workers.yaml).
-    renewEvery: 12h
-    certificateTTL: 24h
-    # Below this much validity left on the CURRENT host certificate,
-    # the readiness probe (never startup or liveness -- see
-    # image/nix-worker-healthcheck.sh: killing a pod that still serves
-    # under a still-valid certificate would drop sessions for no
-    # reason) reports not-ready. With the defaults above, hitting this
-    # floor means the renewal loop has already been silently failing
-    # for about 10h (24h TTL, 12h renewEvery, 2h floor).
-    minRemaining: 2h
-
-  # No estate defaults: a wrong auth mount or role fails every sign
-  # attempt with nothing safe to guess, so each is required render-time
-  # when hostCertificate.enabled (templates/nix-workers.yaml).
-  openbao:
-    address: ""
-    caBundle: "" # base64-encoded PEM of OpenBao's HTTPS issuer CA
-    namespace: ""
-    authMount: ""
-    authRole: ""
-    audience: openbao
-    hostSshMount: ssh   # the SSH secrets engine mount
-    hostSshRole: host   # its host-signing role; must allow cert_type=host
-    requestTimeout: 15s
-
-  # The machine login: `nix`, over the ssh-ng protocol (`nix-daemon
-  # --stdio`). v5.0.0 removed the legacy `nixremote` login
-  # (`nix-store --serve`) together with its `accounts.nixremote` toggle;
-  # setting that key is now a render-time failure
-  # (templates/removed-values.yaml).
-  accounts:
-    nix:
-      # AuthorizedPrincipalsFile content for the `nix` account: the
-      # certificate principal(s) that may log in as it. The default,
-      # ci-nix, is what arc-runners' nixBuilders.login.principal signs
-      # for by default. Must not be empty: with no principal and no
-      # legacy login left the worker would admit no machine at all, so
-      # the chart refuses to render that (templates/nix-workers.yaml).
-      principals: [ci-nix]
-      # trusted-users lets an account import store paths WITHOUT
-      # signature verification -- which a remote build worker needs:
-      # runners upload unsigned derivation inputs. On by default since
-      # v5.0.0, exactly the trust the removed `nixremote` login always
-      # had; set false only for a worker that never receives builds this
-      # way.
-      trusted: true
-
-  # opkssh (the people pilot): OIDC sign-in with no CA, onto the
-  # SAME `nix` account as accounts.nix above (people and CI share it) and
-  # a separate `admin` shell account (interactive, sudo) opkssh alone can
-  # reach. ADDITIVE and OFF by default: accounts.nix and
-  # hostCertificate above are UNCHANGED either way -- this only adds a
-  # second, independent credential path onto accounts the OpenBao
-  # certificate route above already owns.
-  opkssh:
-    # Explicit allow-list of architectures this worker renders opkssh
-    # for. Empty (the default) means every worker renders exactly as it
-    # did before this feature existed -- the account, the binary and the
-    # AuthorizedKeysCommand line are always in the image, but nothing in
-    # AllowUsers or /etc/opk ever changes. This pilot names exactly ONE
-    # worker: naming one architecture here (e.g. ["amd64"]) turns opkssh
-    # on for that arch's StatefulSet alone, leaving the other(s)
-    # untouched -- the same allow-list shape as
-    # truvity/tailscale's router rollout (opksshEnvs).
-    archs: []
-    # The access-roster OIDC issuer and the opkssh client's own client_id
-    # (a distinct client, never a browser client's -- this pilot's own
-    # design: reusing one would let a token minted for one purpose be
-    # replayed against the other). Required when archs above is
-    # non-empty; the chart refuses to render otherwise
-    # (templates/nix-workers.yaml).
-    issuer: ""
-    clientId: opkssh
-    # opkssh's own /etc/opk/providers "expiration" column: how long a
-    # signed-in session's certificate stays valid before a fresh
-    # `opkssh login` is required.
-    expiration: 24h
-    # /etc/opk/auth_id identity values, already dot-rewritten for
-    # opkssh's own colon-splitting parser (access-roster's per-audience
-    # `groups_delimiter`) -- e.g. "<env>.nix-workers.user" /
-    # "<env>.nix-workers.admin", never the colon form. Empty (the
-    # default) admits nobody through that account even when archs above
-    # is non-empty: the account exists and is reachable, but no token
-    # matches.
-    nixGroup: ""
-    adminGroup: ""
-
-  # Each architecture owns its store. The stores are deliberately not
-  # shared with BuildKit: independent capacity, GC and failure domains.
-  storeSize: 100Gi
-  buildDirSize: 40Gi
-  maxJobs: 2
-  cores: 4
-  minFreeBytes: "10737418240" # 10 GiB: start GC pressure handling
-  maxFreeBytes: "21474836480" # 20 GiB: GC back to this headroom
-  resources:
-    requests:
-      cpu: "2"
-      memory: 8Gi
-      ephemeral-storage: 10Gi
-    limits:
-      cpu: "4"
-      memory: 16Gi
-      ephemeral-storage: 50Gi
-  networkPolicy:
-    # REQUIRED while nixWorkers and the policy are on: the runner
-    # namespaces that may reach the workers (see buildkitd.networkPolicy).
-    enabled: true
-    consumerNamespaces: []
-    # Extra ingress beside consumerNamespaces, one additive NetworkPolicy
-    # per entry, exactly as buildkitd.networkPolicy.additionalIngress; the
-    # port is the workers' SSH port. `arch` narrows an entry to one
-    # architecture's worker (a pilot on a single worker).
-    additionalIngress: []
-  # The name of a size under `sizes` above; empty applies none.
-  size: ""
-  # Empty by default (C13): the same as buildkitd's podAnnotations above.
-  podAnnotations: {}
-  # Per-arch placement, as buildkitd.scheduling: a `nodeClass` per
-  # architecture, or nodeSelector / tolerations written out.
-  scheduling:
-    arm64: {}
-    amd64: {}
 
 cacheRedirect:
   # cache-redirect: a pull-through cache for the Nix binary cache, the
@@ -835,7 +399,7 @@ cacheRedirect:
       memory: 1Gi
   networkPolicy:
     # Only listed namespaces may reach the service. REQUIRED while it and
-    # the policy are on (see buildkitd.networkPolicy). additionalIngress
+    # the policy are on (a component without consumers admits nobody). additionalIngress
     # adds a policy per entry on the same port, e.g. for a metrics agent
     # in another namespace (`monitoring` below).
     enabled: true
@@ -935,7 +499,7 @@ npmCache:
       memory: 2Gi
   networkPolicy:
     # Only listed namespaces may consume the cache. REQUIRED while the
-    # cache and the policy are on (see buildkitd.networkPolicy).
+    # cache and the policy are on (a component without consumers admits nobody).
     enabled: true
     consumerNamespaces: []
 

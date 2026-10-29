@@ -1,15 +1,14 @@
 # ci-support
 
-The CI services every GitHub Actions runner uses (caches, docker and nix builders), independent of how the runner is hosted.
+The CI services every GitHub Actions runner uses (caches and docker builders), independent of how the runner is hosted.
 
 | Part | Where | What it is |
 |---|---|---|
 | `ci-builders` chart | `charts/ci-builders` | the Helm chart that deploys the services below |
 | cache-redirect | `image/cache-redirect` | a pull-through cache for Go modules, Nix, Maven, Gradle and npm that answers a hit with a redirect to a presigned URL of its bucket |
-| Docker builders | the chart's `buildkitd` | rootless BuildKit per architecture, optionally behind mutual TLS |
+| Builder trust | the chart's `buildkitd.mtls.clientCA`, `externalBuilders` | the client CA, the client certificates of runners outside the cluster, and the builders' server certificates pushed to a store (see [docs/mtls.md](docs/mtls.md)) |
 | Other caches | the chart's `bazelRemote`, `npmCache` | bazel-remote and the npm read-through cache |
-| Nix workers | the chart's `nixWorkers` | persistent remote Nix builders; their image is still published by [truvity/ci-plane](https://github.com/truvity/ci-plane) |
-| Docker builders on their own machines | `pkg/buildkit`, `pkg/buildkit/ec2` | Go libraries: the BuildKit daemon rendered for a machine of its own (provider-neutral), and a Pulumi component that runs it on an EC2 Auto Scaling group behind a shared network load balancer, with [truvity/asg](https://github.com/truvity/asg) |
+| Docker builders | `pkg/buildkit`, `pkg/buildkit/ec2` | Go libraries: the BuildKit daemon rendered for a machine of its own (provider-neutral), and Pulumi components that run it as one on-demand EC2 instance per architecture behind a wake proxy on a shared network load balancer, with [truvity/asg](https://github.com/truvity/asg) |
 
 The chart and cache-redirect moved here from
 [truvity/ci-plane](https://github.com/truvity/ci-plane). One `v*` tag
@@ -50,44 +49,51 @@ the reason for the split from the runner images.
 Install the chart from the registry with an explicit `--version` and a
 values file that names your own cluster facts. The chart refuses to render
 without the ones it requires (for example the namespaces allowed to reach
-each builder):
+each cache):
 
 ```bash
 helm install ci-builders oci://ghcr.io/truvity/ci-support/charts/ci-builders \
   --version <X.Y.Z> -n <namespace> \
-  --set buildkitd.networkPolicy.consumerNamespaces={<runner namespace>} \
   --set npmCache.networkPolicy.consumerNamespaces={<runner namespace>}
 ```
 
 [docs/day-1-install.md](docs/day-1-install.md) walks through a fresh
-install, [docs/mtls.md](docs/mtls.md) the builders behind mutual TLS.
+install, [docs/mtls.md](docs/mtls.md) the builders' mutual TLS.
 
 The builders on EC2 are a Go library, pinned in the consumer's `go.mod`:
 
 ```bash
-go get github.com/truvity/ci-support@v0.1.0
+go get github.com/truvity/ci-support@v1.0.0
 ```
 
 ```go
+proxy, err := ec2.NewProxy(ctx, "buildkit-proxy", &ec2.ProxyArgs{
+    Name: "<env>-buildkit-proxy", Region: region, VPCID: vpc, SubnetIDs: private,
+    NLB: sharedNLB, Sources: []front.Source{{SecurityGroupID: runnerSG}},
+    Routes: []ec2.ProxyRoute{{Name: "arm64", Port: 1235, TargetTagValue: "<env>-buildkit-arm64"}},
+})
+
 b, err := ec2.New(ctx, "buildkit-arm64", &ec2.Args{
     Arch: "arm64", Name: "<env>-buildkit-arm64", InstanceType: "m7g.xlarge",
-    VPCID: vpc, SubnetIDs: private, PermissionsBoundary: boundaryARN,
-    NLB: sharedNLB, Port: 1235, // from the consumer's port registry
-    Sources: []front.Source{{SecurityGroupID: runnerSG}},
+    VPCID: vpc, PermissionsBoundary: boundaryARN,
+    Port: 1235, // from the consumer's port registry
     Certificate: ec2.Certificate{
         Cert: "/<prefix>/arm64/cert", Key: "/<prefix>/arm64/key", ClientCA: "/<prefix>/client-ca",
         KeyAlias: "alias/<key of those parameters>",
     },
     Daemon: buildkit.Config{MaxParallelism: 6},
+    OnDemand: &ec2.OnDemandArgs{
+        SubnetID: subnet, Zone: "<zone>", ProxySecurityGroupID: proxy.SecurityGroupID(),
+    },
 })
 ```
 
-[docs/buildkit-on-ec2.md](docs/buildkit-on-ec2.md) describes the machine.
-
-`Mode: ec2.ModeOnDemand` keeps each builder a single **stopped** instance with a
-persistent cache volume, behind an always-on wake proxy (`ec2.NewProxy`) that
-starts it when a client connects and stops it after 20 idle minutes; see
-"On demand" in that document, including the migration order.
+[docs/buildkit-on-ec2.md](docs/buildkit-on-ec2.md) describes the machine. Each
+builder is a single **stopped** instance with a persistent cache volume,
+behind an always-on wake proxy (`ec2.NewProxy`) that starts it when a client
+connects and stops it after 20 idle minutes. v1.0.0 removed the group mode
+(an Auto Scaling group with a warm pool per builder); see
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Consumers
 
@@ -102,8 +108,8 @@ Who uses this, and through which surface (2026-10-25):
 ## Neighbours
 
 - **[truvity/ci-plane](https://github.com/truvity/ci-plane)**: where this
-  content came from. It still publishes the runner and nix-worker images
-  the chart names, and the archived ARC runner scale-set chart.
+  content came from. It still publishes the runner images and the archived
+  ARC runner scale-set chart.
 - **[truvity/grun](https://github.com/truvity/grun)**: runners on serverless
   containers; a client of the services here.
 - **[truvity/ci-workflows](https://github.com/truvity/ci-workflows)** and
@@ -117,7 +123,7 @@ Who uses this, and through which surface (2026-10-25):
 - [docs/architecture.md](docs/architecture.md): the load-bearing decisions.
 - [docs/day-1-install.md](docs/day-1-install.md): installing on a fresh estate.
 - [docs/day-2-operations.md](docs/day-2-operations.md): releasing and operating.
-- [docs/mtls.md](docs/mtls.md): the builders behind mutual TLS.
+- [docs/mtls.md](docs/mtls.md): the builders' mutual TLS.
 - [docs/buildkit-on-ec2.md](docs/buildkit-on-ec2.md): a builder on a machine of its own.
 
 The rules for working in this repository are in

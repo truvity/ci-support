@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # Stamp release image digests into chart defaults, BY KEY.
 #
-#   hack/stamp-digests.sh runnerImage=sha256:… nixWorkerImage=sha256:…
+#   hack/stamp-digests.sh cacheRedirectImage=sha256:…
 #
-# Until the nix worker got its own image the release did this with one
-# sed over every `digest:` line in every chart, which was correct while
-# there was exactly one image to stamp. With two it is actively wrong: it
-# would write the RUNNER's digest into nixWorkerImage, and the worker
-# would run the runner image again -- silently, because the value is a
-# valid digest and the pods start.
+# It rewrites the digest inside the named top-level mapping only, never a
+# blind sed over every `digest:` line.
 #
 # THIS SCRIPT IS INTERIM. The estate's public repositories package charts
 # with helmctl from goreleaser's dist/artifacts.json, which needs no
 # stamping at all. This repository cannot use that yet: helmctl reads and
-# validates a single `images:` map, and these charts carry top-level
-# `runnerImage:` / `nixWorkerImage:`. Adopting that convention is a
+# validates a single `images:` map, and these charts carry a top-level
+# `cacheRedirectImage:`. Adopting that convention is a
 # breaking values change with consumers to move, so it is its own piece
 # of work -- and this script is what keeps the release correct until
 # then. Delete it when `chart-images: goreleaser` lands.

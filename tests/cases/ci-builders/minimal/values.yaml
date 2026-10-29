@@ -1,8 +1,5 @@
 # The smallest install that works: the defaults, plus the one estate fact
 # the chart cannot guess -- which runner namespaces may reach it.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

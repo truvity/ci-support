@@ -1,8 +1,5 @@
 # refuses: /cacheRedirect/presignTTL
 # Not a Go duration: the service would refuse to start on it.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

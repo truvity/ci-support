@@ -1,8 +1,5 @@
 # refuses: there is nothing to serve
 # Every front-end off (the Gradle build cache is off by default).
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

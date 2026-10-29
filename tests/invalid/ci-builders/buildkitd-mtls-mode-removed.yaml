@@ -1,0 +1,8 @@
+# refuses: `buildkitd.mtls.mode`
+buildkitd:
+  mtls:
+    enabled: true
+    mode: inPlace
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

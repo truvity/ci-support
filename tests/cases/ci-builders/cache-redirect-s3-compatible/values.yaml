@@ -1,9 +1,6 @@
 # cache-redirect on an S3-compatible store with no pod identity: an
 # endpoint, path-style addressing, static keys from an existing Secret,
 # the Nix front-end alone, a longer redirect TTL and an extra flag.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

@@ -2,9 +2,6 @@
 # preset), under the one prefix a runneridentity CacheRedirect role grants, at
 # a registry of the consumer's own choice and with a longer packument window,
 # and served at the root of a name of its own.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

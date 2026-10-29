@@ -1,9 +1,6 @@
 # cache-redirect with the Maven repositories narrowed to two upstreams of the
 # consumer's own choice and the Gradle remote build cache switched on, both
 # under the one prefix a runneridentity CacheRedirect role grants.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

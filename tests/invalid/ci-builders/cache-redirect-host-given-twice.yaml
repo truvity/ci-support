@@ -1,8 +1,5 @@
 # refuses: each front-end needs a host of its own
 # One name for two front-ends: a request could not tell them apart.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

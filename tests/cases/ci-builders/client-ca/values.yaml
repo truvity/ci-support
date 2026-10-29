@@ -1,0 +1,11 @@
+# The client CA built by the chart (cert-manager, approver-policy and
+# trust-manager objects).
+buildkitd:
+  mtls:
+    enabled: true
+    clientCA:
+      create: true
+      requesterNamespaces: [arc-runners-example, arc-runners-other]
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
