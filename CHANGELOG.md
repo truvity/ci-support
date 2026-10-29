@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+- **New: `ec2.ProxyArgs.MetricsListenPort`, `MetricsSources` and `MetricsListener` publish the wake proxy's Prometheus metrics on the shared NLB.** With `MetricsListenPort` set, the proxy gets a TCP listener and a target group on that port (HTTP health check `/healthz` on the health port, like the routes), the group is attached to it, the proxy's security group admits the NLB's group on that port, and the proxy binds `0.0.0.0:<port>` unless `MetricsAddress` names a non-loopback host with the same port. The metrics are then scrapable from inside the VPC at `http://<NLB DNS name>:<port>/metrics`, a name that survives instance refreshes. New output `Proxy.MetricsListenPort`. Unset keeps today's behaviour: the existing goldens are unchanged. docs/buildkit-on-ec2.md, "Scraping the proxy's metrics across the VPC".
+
 ## v0.3.2
 
 - **Fixed: on-demand builders no longer show a perpetual `userData` update after a refresh.** Updates `github.com/truvity/asg` from v0.8.0 to v0.8.1, which makes a single instance (`asg.Args.Single`) ignore `userData` and `userDataBase64`. A refresh read the user-data back and reported a change on the builder instance every time, and applying it stopped and started the builder. The wake proxy is unchanged (`ec2.WakeProxyVersion` stays v0.8.0).

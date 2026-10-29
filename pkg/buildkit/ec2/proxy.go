@@ -3,7 +3,10 @@ package ec2
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/pulumi/pulumi-aws/sdk/v7/go/aws"
@@ -25,6 +28,9 @@ const (
 	DefaultProxyInstanceType = "t4g.nano"
 	DefaultProxyArch         = "arm64"
 	DefaultProxyHealthPort   = wakeproxy.DefaultHealthPort
+	// DefaultProxyMetricsListener names the metrics listener when
+	// ProxyArgs.MetricsListenPort is set.
+	DefaultProxyMetricsListener = "buildkit-proxy-metrics"
 	// DefaultIdleTimeout is how long a builder may go without a connection
 	// before the proxy stops it.
 	DefaultIdleTimeout = 20 * time.Minute
@@ -111,8 +117,29 @@ type (
 		// HealthPort serves GET /healthz for the NLB health check. Default
 		// 8080.
 		HealthPort int
-		// MetricsAddress, when set (127.0.0.1:9102), serves Prometheus text.
+		// MetricsAddress, when set (127.0.0.1:9102), serves Prometheus text
+		// on the proxy itself: reachable only from the instance. To scrape it
+		// across the VPC through the shared NLB, set MetricsListenPort.
 		MetricsAddress string
+		// MetricsListenPort, when set (1024..65535, from the NLB's port
+		// registry), publishes the metrics on the shared NLB: a TCP listener
+		// on this port, a target group forwarding to the same port on the
+		// proxy instances (so it follows instance refreshes), the Auto
+		// Scaling group attached to it, and a rule admitting the NLB's
+		// security group to that port. Scrape http://<NLB DNS name>:<port>/metrics.
+		// The proxy then binds 0.0.0.0:<port> unless MetricsAddress names a
+		// non-loopback host with this same port. The metrics have no
+		// authentication or TLS, so name only the scrapers in MetricsSources.
+		// Zero keeps the metrics where MetricsAddress puts them and creates
+		// nothing.
+		MetricsListenPort int
+		// MetricsListener names the metrics listener and its target group.
+		// Default "buildkit-proxy-metrics".
+		MetricsListener string
+		// MetricsSources may connect to MetricsListenPort (the scraper's
+		// security group or range). At least one when MetricsListenPort is
+		// set; refused otherwise.
+		MetricsSources []front.Source
 		// IdleTimeout and WakeTimeout. Defaults 20m and 180s.
 		IdleTimeout, WakeTimeout time.Duration
 
@@ -134,8 +161,11 @@ type (
 		// RoleTagKey is the key the routes select by.
 		RoleTagKey string
 		// HealthPort and MetricsAddress are what alerts scrape.
-		HealthPort     int
-		MetricsAddress string
+		// MetricsListenPort is the NLB port of the metrics (0 when they are
+		// not published on the NLB).
+		HealthPort        int
+		MetricsAddress    string
+		MetricsListenPort int
 		// GroupName is the Auto Scaling group's name.
 		GroupName string
 	}
@@ -188,6 +218,16 @@ func (a ProxyArgs) withDefaults(name string) ProxyArgs {
 
 	if a.HealthPort == 0 {
 		a.HealthPort = DefaultProxyHealthPort
+	}
+
+	if a.MetricsListenPort != 0 {
+		if a.MetricsListener == "" {
+			a.MetricsListener = DefaultProxyMetricsListener
+		}
+
+		if a.MetricsAddress == "" {
+			a.MetricsAddress = "0.0.0.0:" + strconv.Itoa(a.MetricsListenPort)
+		}
 	}
 
 	if a.IdleTimeout == 0 {
@@ -310,6 +350,8 @@ func (a ProxyArgs) validate() error {
 		targets[r.TargetTagValue] = true
 	}
 
+	a.validateMetrics(add, ports, listeners)
+
 	if !tagKeyRe.MatchString(a.RoleTagKey) {
 		add("RoleTagKey %q: not a valid tag key", a.RoleTagKey)
 	}
@@ -321,6 +363,41 @@ func (a ProxyArgs) validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// validateMetrics checks the metrics listener against the routes' ports and
+// listener names (the maps validate fills).
+func (a ProxyArgs) validateMetrics(add func(string, ...any), ports map[int]bool, listeners map[string]bool) {
+	if a.MetricsListenPort == 0 {
+		if len(a.MetricsSources) != 0 || a.MetricsListener != "" {
+			add("MetricsSources and MetricsListener are set without MetricsListenPort")
+		}
+
+		return
+	}
+
+	if a.MetricsListenPort < 1024 || a.MetricsListenPort > 65535 || a.MetricsListenPort == a.HealthPort || ports[a.MetricsListenPort] {
+		add("MetricsListenPort %d: want the registered port, 1024..65535 and not the health port or a route's port", a.MetricsListenPort)
+	}
+
+	if listeners[a.MetricsListener] {
+		add("MetricsListener %q is also a route's listener", a.MetricsListener)
+	}
+
+	if len(a.MetricsSources) == 0 {
+		add("MetricsSources is empty: nobody could scrape the metrics; name the scraper's security group or range")
+	}
+
+	host, port, err := net.SplitHostPort(a.MetricsAddress)
+	if err != nil || port != strconv.Itoa(a.MetricsListenPort) {
+		add("MetricsAddress %q: with MetricsListenPort %d want host:%d", a.MetricsAddress, a.MetricsListenPort, a.MetricsListenPort)
+
+		return
+	}
+
+	if ip, err := netip.ParseAddr(host); host == "localhost" || (err == nil && ip.IsLoopback()) {
+		add("MetricsAddress %q is loopback: the NLB cannot reach it; leave it empty to bind 0.0.0.0", a.MetricsAddress)
+	}
 }
 
 func (a ProxyArgs) selectors() []wakeproxy.Selector {
@@ -391,6 +468,21 @@ func NewProxy(ctx *pulumi.Context, name string, args *ProxyArgs, opts ...pulumi.
 		}
 	}
 
+	// The metrics listener: the same wiring as a route. The health check is
+	// the proxy's /healthz on the health port, like the routes': the group's
+	// ELB health must follow the proxy, not the metrics server (a proxy whose
+	// metrics fail still serves builds and must not be replaced for that).
+	if a.MetricsListenPort != 0 {
+		listeners = append(listeners, front.Listener{
+			Name:                       a.MetricsListener,
+			Port:                       a.MetricsListenPort,
+			TargetPort:                 a.MetricsListenPort,
+			DeregistrationDelaySeconds: DefaultDeregistrationDelaySeconds,
+			HealthCheck:                front.HealthCheck{Protocol: "HTTP", Path: "/healthz", Port: a.HealthPort},
+			Sources:                    a.MetricsSources,
+		})
+	}
+
 	f, err := front.Attach(ctx, name, a.NLB, listeners, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("buildkit ec2 proxy: NewProxy(%q, ...): %w", name, err)
@@ -440,7 +532,8 @@ func NewProxy(ctx *pulumi.Context, name string, args *ProxyArgs, opts ...pulumi.
 
 	return &Proxy{
 		Box: box, Front: f, Rendered: rendered, RoleTagKey: a.RoleTagKey,
-		HealthPort: a.HealthPort, MetricsAddress: a.MetricsAddress, GroupName: resolved.Group,
+		HealthPort: a.HealthPort, MetricsAddress: a.MetricsAddress, MetricsListenPort: a.MetricsListenPort,
+		GroupName: resolved.Group,
 	}, nil
 }
 
