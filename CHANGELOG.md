@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+- **Fixed: on-demand builders no longer show a perpetual `userData` update after a refresh.** Updates `github.com/truvity/asg` from v0.8.0 to v0.8.1, which makes a single instance (`asg.Args.Single`) ignore `userData` and `userDataBase64`. A refresh read the user-data back and reported a change on the builder instance every time, and applying it stopped and started the builder. The wake proxy is unchanged (`ec2.WakeProxyVersion` stays v0.8.0).
+
 ## v0.3.1
 
 - **Updated: the on-demand BuildKit wake proxy is truvity/asg v0.8.0 (was v0.6.0): a TCP health probe no longer wakes the builder.** `ec2.WakeProxyVersion` and `ec2.WakeProxySHA256` follow the release, and `github.com/truvity/asg` moves to v0.8.0. The proxy now wakes a builder on the client's first byte instead of on connect (per-route `wakeOn`, default `data`; `firstByteTimeout`, default 30 s; the binary fills both itself). BuildKit clients speak first (TLS), so the routes keep the default and a build wakes the builder as before, while a bare connect, such as a load balancer's or a monitor's TCP probe, leaves it stopped. The `proxy.userdata.golden.yaml` golden gains the new pinned URL and digest.
