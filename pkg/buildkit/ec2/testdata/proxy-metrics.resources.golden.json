@@ -214,7 +214,7 @@
   },
   {
     "inputs": {
-      "deregistrationDelay": 900,
+      "deregistrationDelay": 300,
       "healthCheck": {
         "enabled": true,
         "healthyThreshold": 3,
@@ -238,7 +238,7 @@
   },
   {
     "inputs": {
-      "deregistrationDelay": 900,
+      "deregistrationDelay": 300,
       "healthCheck": {
         "enabled": true,
         "healthyThreshold": 3,
@@ -262,7 +262,7 @@
   },
   {
     "inputs": {
-      "deregistrationDelay": 900,
+      "deregistrationDelay": 300,
       "healthCheck": {
         "enabled": true,
         "healthyThreshold": 3,

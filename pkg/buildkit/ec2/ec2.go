@@ -74,8 +74,10 @@ const (
 	// step can be silent for a long time.
 	DefaultIdleTimeoutSeconds = 3600
 	// DefaultDeregistrationDelaySeconds is how long a leaving instance keeps
-	// serving the connections it has.
-	DefaultDeregistrationDelaySeconds = 900
+	// serving the connections it has. 300 fits the AWS provider's ~10 minute
+	// wait for an Auto Scaling Group to drain, so deleting a group succeeds
+	// and an instance refresh does not stall 15 minutes per instance.
+	DefaultDeregistrationDelaySeconds = 300
 	// DefaultHookHeartbeatSeconds bounds a boot into service: the
 	// certificate, the daemon and its cache index (minutes on a full cache).
 	DefaultHookHeartbeatSeconds = 1800

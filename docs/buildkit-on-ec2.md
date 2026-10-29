@@ -187,4 +187,4 @@ nothing changes.
   daemon's `/metrics` and shipping the journal). Until then the consumer's
   probe of the listener is the signal.
 - A terminate lifecycle hook that waits for running builds: today the target
-  group's deregistration delay (900 s) is the only drain on scale-in.
+  group's deregistration delay (300 s) is the only drain on scale-in.

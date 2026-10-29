@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+- **Changed: the target groups' deregistration delay for the on-demand builders and the wake proxy is 300 s (was 900 s).** `ec2.DefaultDeregistrationDelaySeconds` drops from 900 to 300. With 900 s, deleting or refreshing a builder or proxy Auto Scaling Group outlasted the AWS provider's ~10 minute drain wait ("waiting for Auto Scaling Group drain") and every instance refresh waited 15 minutes per instance. A BuildKit session still open 300 s after its target deregisters is now cut. Consumers will see an in-place update of each target group's `deregistrationDelay` on the next apply.
+
 ## v0.4.0
 
 - **New: `ec2.ProxyArgs.MetricsListenPort`, `MetricsSources` and `MetricsListener` publish the wake proxy's Prometheus metrics on the shared NLB.** With `MetricsListenPort` set, the proxy gets a TCP listener and a target group on that port (HTTP health check `/healthz` on the health port, like the routes), the group is attached to it, the proxy's security group admits the NLB's group on that port, and the proxy binds `0.0.0.0:<port>` unless `MetricsAddress` names a non-loopback host with the same port. The metrics are then scrapable from inside the VPC at `http://<NLB DNS name>:<port>/metrics`, a name that survives instance refreshes. New output `Proxy.MetricsListenPort`. Unset keeps today's behaviour: the existing goldens are unchanged. docs/buildkit-on-ec2.md, "Scraping the proxy's metrics across the VPC".
