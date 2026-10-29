@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v1.1.0
 
 ### Added
 
