@@ -151,8 +151,35 @@ longer than its own connect timeout: that is the caller's.
 `Builder.RoleTagKey` / `RoleTagValue`; `Proxy.GroupName`, `Proxy.SecurityGroupID()`,
 `Proxy.HealthPort`, `Proxy.MetricsAddress` (set `ProxyArgs.MetricsAddress` to
 serve Prometheus text on the proxy: active connections, wakes, wake failures,
-wake duration, stops, dial and resolve failures per route) and
-`Proxy.Front` (the listeners' target group ARNs).
+wake duration, stops, dial and resolve failures per route),
+`Proxy.MetricsListenPort` and `Proxy.Front` (the listeners' target group ARNs).
+
+### Scraping the proxy's metrics across the VPC
+
+`MetricsAddress` alone (`127.0.0.1:9102`) is reachable only from the proxy
+instance, and the instance is replaced by every refresh. To scrape it from
+inside the VPC by a stable name, publish it on the shared NLB:
+
+```go
+ec2.ProxyArgs{
+    // ...
+    MetricsListenPort: 9102, // the port registry's entry on the NLB
+    MetricsSources: []front.Source{{SecurityGroupID: scraperSG, Description: "metrics scraper"}},
+}
+```
+
+This adds a TCP listener on the port, a target group forwarding to the same
+port on the proxy instances (the group is attached to it, so a replacement is
+registered by itself) and a rule admitting the NLB's security group to that
+port. The proxy binds `0.0.0.0:<port>` (leave `MetricsAddress` empty, or give
+a non-loopback host with the same port). The target group's health check is the
+proxy's `/healthz` on the health port, like the routes': the group replaces an
+instance when the proxy is down, not when only the metrics server is. Scrape
+`http://<NLB DNS name>:<port>/metrics`, for example with a static scrape
+target on the NLB's stable record. The endpoint has no authentication or TLS:
+list only the scrapers in `MetricsSources` (`MetricsListener` renames the
+listener, default `buildkit-proxy-metrics`). With `MetricsListenPort` unset
+nothing changes.
 
 ## Not built yet
 

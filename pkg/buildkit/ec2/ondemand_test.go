@@ -303,6 +303,89 @@ func TestProxyResourceSet(t *testing.T) {
 	}
 }
 
+// metricsProxyArgs publishes the proxy's metrics on the shared NLB.
+func metricsProxyArgs() *ec2.ProxyArgs {
+	a := proxyArgs()
+	a.MetricsListenPort = 9102
+	a.MetricsSources = []front.Source{{CIDR: "10.0.0.0/16", Description: "metrics scraper"}}
+
+	return a
+}
+
+func TestProxyMetricsListener(t *testing.T) {
+	rec, p, err := runProxy(t, metricsProxyArgs())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	golden(t, "proxy-metrics.resources.golden.json", rec.dump(t))
+	golden(t, "proxy-metrics.userdata.golden.yaml", p.Rendered.CloudConfig)
+
+	if p.MetricsAddress != "0.0.0.0:9102" || p.MetricsListenPort != 9102 {
+		t.Errorf("outputs %q %d", p.MetricsAddress, p.MetricsListenPort)
+	}
+
+	if !strings.Contains(p.Rendered.CloudConfig, "0.0.0.0:9102") {
+		t.Error("the proxy does not bind the metrics on all interfaces")
+	}
+
+	g := rec.find(t, "aws:autoscaling/group:Group", "buildkit-proxy")
+	if len(g["targetGroupArns"].([]any)) != 3 {
+		t.Errorf("the group is attached to %v", g["targetGroupArns"])
+	}
+
+	var listeners, targets, rule int
+
+	for _, x := range rec.all {
+		in := x["inputs"].(map[string]any)
+
+		switch x["type"] {
+		case "aws:lb/listener:Listener":
+			listeners++
+		case "aws:lb/targetGroup:TargetGroup":
+			targets++
+		case "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule":
+			if in["fromPort"] == float64(9102) && in["toPort"] == float64(9102) && in["referencedSecurityGroupId"] != nil {
+				rule++
+			}
+		}
+	}
+
+	if listeners != 3 || targets != 3 || rule != 1 {
+		t.Errorf("%d listeners, %d target groups, %d proxy ingress rules on 9102", listeners, targets, rule)
+	}
+}
+
+func TestProxyMetricsAddressKept(t *testing.T) {
+	a := metricsProxyArgs()
+	a.MetricsAddress = "10.1.2.3:9102"
+
+	if _, p, err := runProxy(t, a); err != nil || p.MetricsAddress != "10.1.2.3:9102" {
+		t.Errorf("%v", err)
+	}
+}
+
+func TestProxyMetricsRefusals(t *testing.T) {
+	for name, mut := range map[string]func(*ec2.ProxyArgs){
+		"no sources":        func(a *ec2.ProxyArgs) { a.MetricsSources = nil },
+		"route port":        func(a *ec2.ProxyArgs) { a.MetricsListenPort = a.Routes[0].Port },
+		"health port":       func(a *ec2.ProxyArgs) { a.MetricsListenPort = a.HealthPort + 0; a.HealthPort = 9102 },
+		"low port":          func(a *ec2.ProxyArgs) { a.MetricsListenPort = 80 },
+		"loopback":          func(a *ec2.ProxyArgs) { a.MetricsAddress = "127.0.0.1:9102" },
+		"other port":        func(a *ec2.ProxyArgs) { a.MetricsAddress = "0.0.0.0:9103" },
+		"listener clash":    func(a *ec2.ProxyArgs) { a.MetricsListener = "buildkit-arm64" },
+		"sources w/o port":  func(a *ec2.ProxyArgs) { a.MetricsListenPort = 0; a.MetricsAddress = "" },
+		"world not allowed": func(a *ec2.ProxyArgs) { a.MetricsSources = []front.Source{{CIDR: "0.0.0.0/0"}} },
+	} {
+		a := metricsProxyArgs()
+		mut(a)
+
+		if _, _, err := runProxy(t, a); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestProxyUserDataGolden(t *testing.T) {
 	_, p, err := runProxy(t, proxyArgs())
 	if err != nil {
