@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v1.1.2
 
 - Fixed: the wake proxy the on-demand builders install is now truvity/asg v0.9.0 (`ec2.WakeProxyVersion` and `WakeProxySHA256` were v0.8.0). v0.9.0 exports `wake_proxy_connect_failures_total`, which the chart's `WakeProxyBuilderUnreachable` alert (v1.1.1) needs; with the v0.8.0 proxy the series was absent and the alert could never fire. A new proxy release is a new launch template version, so the proxy instance is refreshed on the next apply. Next release: v1.1.2.
 
