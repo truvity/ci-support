@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v0.3.2
 
 - **Fixed: on-demand builders no longer show a perpetual `userData` update after a refresh.** Updates `github.com/truvity/asg` from v0.8.0 to v0.8.1, which makes a single instance (`asg.Args.Single`) ignore `userData` and `userDataBase64`. A refresh read the user-data back and reported a change on the builder instance every time, and applying it stopped and started the builder. The wake proxy is unchanged (`ec2.WakeProxyVersion` stays v0.8.0).
 
