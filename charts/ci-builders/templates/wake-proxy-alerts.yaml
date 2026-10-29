@@ -31,6 +31,7 @@ spec:
     - name: wake-proxy
       rules:
         - alert: WakeProxyDown
+          record: ""
           expr: up{job={{ $job | quote }}} == 0
           for: {{ $t.down.for }}
           labels:
@@ -40,6 +41,7 @@ spec:
             summary: The BuildKit wake proxy is not answering its metrics scrape
             description: {{ printf `The wake proxy ({{ $labels.instance }}) has not answered its /metrics scrape for %s. A runner's build cannot wake its on-demand builder while the proxy is down. Check the proxy's Auto Scaling group and its target group.` $t.down.for | quote }}
         - alert: WakeProxyAbsent
+          record: ""
           expr: absent(up{job={{ $job | quote }}, {{ $l }}={{ $a.clusterName | quote }}})
           for: {{ $t.absent.for }}
           labels:
@@ -49,6 +51,7 @@ spec:
             summary: The BuildKit wake proxy is not scraped at all
             description: {{ printf `No up{job="%s"} series for %s: the scrape target is gone, not only down. Check the static scrape target of the proxy's metrics, its DNS name and the proxy's metrics listener on the load balancer.` $job $t.absent.for | quote }}
         - alert: WakeProxyWakeFailures
+          record: ""
           expr: increase(wake_proxy_wake_failures_total[{{ $t.wakeFailures.window }}]) > 0
           labels:
             {{ $l }}: {{ $a.clusterName }}
@@ -61,6 +64,7 @@ spec:
         silent. wake_proxy_dial_failures_total is not used: it counts every dial
         attempt, so it rises on every normal wake. */}}
         - alert: WakeProxyBuilderUnreachable
+          record: ""
           expr: increase(wake_proxy_connect_failures_total[{{ $t.builderUnreachable.window }}]) > 0
           labels:
             {{ $l }}: {{ $a.clusterName }}
@@ -69,6 +73,7 @@ spec:
             summary: {{ `The wake proxy cannot reach the {{ $labels.route }} builder` | quote }}
             description: {{ printf `A client's build got no connection to the {{ $labels.route }} builder after the wake and every retry ({{ $value | humanize }} abandoned connections in %s). The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group.` $t.builderUnreachable.window | quote }}
         - alert: WakeProxySlowWake
+          record: ""
           expr: (rate(wake_proxy_wake_duration_seconds_sum[{{ $t.slowWake.window }}]) / rate(wake_proxy_wake_duration_seconds_count[{{ $t.slowWake.window }}])) > {{ $t.slowWake.seconds }} and rate(wake_proxy_wake_duration_seconds_count[{{ $t.slowWake.window }}]) > 0
           labels:
             {{ $l }}: {{ $a.clusterName }}

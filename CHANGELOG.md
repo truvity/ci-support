@@ -6,6 +6,7 @@ together under one version.
 ## Unreleased
 
 - Fixed: `WakeProxyBuilderUnreachable` fired on every normal wake. It alerted on `wake_proxy_dial_failures_total`, which counts every dial attempt including the refused retries while a woken builder boots (about 4 per wake), and on `wake_proxy_resolve_failures_total`, which is per poll attempt too. It now alerts on `increase(wake_proxy_connect_failures_total[15m]) > 0`: a client's build got no builder connection after the wake and every retry. The description says so. This needs the wake proxy from truvity/asg >= v0.9.0; with an older proxy the series is absent and the alert stays silent (upgrade the proxy with this chart). Next release: v1.1.1 (a fix to a rule's expression, no API or value change).
+- Fixed: the wake-proxy VMRule writes the CRD's `record: ""` default explicitly on every alerting rule, so Argo CD no longer reports it OutOfSync.
 
 ## v1.1.0
 

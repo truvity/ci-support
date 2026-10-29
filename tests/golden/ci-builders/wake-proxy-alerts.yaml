@@ -13,6 +13,7 @@ spec:
     - name: wake-proxy
       rules:
         - alert: WakeProxyDown
+          record: ""
           expr: up{job="wake-proxy"} == 0
           for: 5m
           labels:
@@ -22,6 +23,7 @@ spec:
             summary: The BuildKit wake proxy is not answering its metrics scrape
             description: "The wake proxy ({{ $labels.instance }}) has not answered its /metrics scrape for 5m. A runner's build cannot wake its on-demand builder while the proxy is down. Check the proxy's Auto Scaling group and its target group."
         - alert: WakeProxyAbsent
+          record: ""
           expr: absent(up{job="wake-proxy", k8s_cluster_name="example"})
           for: 15m
           labels:
@@ -31,6 +33,7 @@ spec:
             summary: The BuildKit wake proxy is not scraped at all
             description: "No up{job=\"wake-proxy\"} series for 15m: the scrape target is gone, not only down. Check the static scrape target of the proxy's metrics, its DNS name and the proxy's metrics listener on the load balancer."
         - alert: WakeProxyWakeFailures
+          record: ""
           expr: increase(wake_proxy_wake_failures_total[15m]) > 0
           labels:
             k8s_cluster_name: example
@@ -39,6 +42,7 @@ spec:
             summary: "The wake proxy failed to wake the {{ $labels.route }} builder"
             description: "The wake proxy could not start the {{ $labels.route }} builder ({{ $value | humanize }} failed wakes in 15m). Builds on that architecture wait or fail. Check the builder instance (EC2 start errors, capacity, the cache volume) and the proxy's journal."
         - alert: WakeProxyBuilderUnreachable
+          record: ""
           expr: increase(wake_proxy_connect_failures_total[15m]) > 0
           labels:
             k8s_cluster_name: example
@@ -47,6 +51,7 @@ spec:
             summary: "The wake proxy cannot reach the {{ $labels.route }} builder"
             description: "A client's build got no connection to the {{ $labels.route }} builder after the wake and every retry ({{ $value | humanize }} abandoned connections in 15m). The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group."
         - alert: WakeProxySlowWake
+          record: ""
           expr: (rate(wake_proxy_wake_duration_seconds_sum[30m]) / rate(wake_proxy_wake_duration_seconds_count[30m])) > 120 and rate(wake_proxy_wake_duration_seconds_count[30m]) > 0
           labels:
             k8s_cluster_name: example
