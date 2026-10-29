@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v0.4.1
 
 - **Changed: the target groups' deregistration delay for the on-demand builders and the wake proxy is 300 s (was 900 s).** `ec2.DefaultDeregistrationDelaySeconds` drops from 900 to 300. With 900 s, deleting or refreshing a builder or proxy Auto Scaling Group outlasted the AWS provider's ~10 minute drain wait ("waiting for Auto Scaling Group drain") and every instance refresh waited 15 minutes per instance. A BuildKit session still open 300 s after its target deregisters is now cut. Consumers will see an in-place update of each target group's `deregistrationDelay` on the next apply.
 
