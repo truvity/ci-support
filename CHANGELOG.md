@@ -3,6 +3,12 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+### Added
+
+- `pkg/runneridentity` (moved from truvity/ci-plane `deploy/pulumi/runneridentity`, same API).
+
 ## v1.0.0
 
 The next release is v1.0.0: this repository removes what no consumer uses.
