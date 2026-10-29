@@ -150,6 +150,47 @@ list only the scrapers in `MetricsSources` (`MetricsListener` renames the
 listener, default `buildkit-proxy-metrics`). With `MetricsListenPort` unset
 nothing changes.
 
+### Alerts
+
+The `ci-builders` chart ships the proxy's alert rules as one
+`VMRule` (VictoriaMetrics operator, `operator.victoriametrics.com/v1beta1`,
+group `wake-proxy`). Off by default; per cluster:
+
+```yaml
+wakeProxy:
+  alerts:
+    enabled: true
+    clusterName: my-cluster      # required: labels every alert
+    # clusterLabel: k8s_cluster_name
+    # job: wake-proxy            # the scrape job of the proxy's /metrics
+    # name: wake-proxy-alerts    # the VMRule, in the release namespace
+    # thresholds:
+    #   down: {for: 5m}
+    #   absent: {for: 15m}
+    #   wakeFailures: {window: 15m}
+    #   builderUnreachable: {window: 15m}
+    #   slowWake: {window: 30m, seconds: 120}
+```
+
+The VMRule is rendered only when the cluster serves the operator's API
+(`.Capabilities.APIVersions`); without it the chart renders nothing for it and
+does not fail. The scrape itself (a static target on the metrics listener, path
+`/metrics`, job `wake-proxy`) is the estate's own: the chart renders rules, not
+scrape objects, because the scraper owns the labels it stamps on a series. The
+rules need the series to carry `clusterLabel`.
+
+| Alert | Severity | Fires when | Metric |
+| --- | --- | --- | --- |
+| `WakeProxyDown` | critical | the scrape fails for `down.for` (5m) | `up{job}` |
+| `WakeProxyAbsent` | critical | no `up` series for the cluster for `absent.for` (15m) | `up{job,<clusterLabel>}` |
+| `WakeProxyWakeFailures` | warning | any failed wake in `wakeFailures.window` (15m), per `route` | `wake_proxy_wake_failures_total` |
+| `WakeProxyBuilderUnreachable` | warning | any dial or resolve failure after a wake in `builderUnreachable.window` (15m), per `route` | `wake_proxy_dial_failures_total`, `wake_proxy_resolve_failures_total` |
+| `WakeProxySlowWake` | warning | the mean wake takes more than `slowWake.seconds` (120) over `slowWake.window` (30m) | `wake_proxy_wake_duration_seconds_sum` / `_count` |
+
+The counters restart with every proxy replacement, so the rules read
+`increase()` and `rate()`, never the raw counter. The `route` label is the
+architecture the builder serves.
+
 ## Not built yet
 
 - Telemetry from the machine (an OpenTelemetry collector scraping the

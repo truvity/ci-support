@@ -503,3 +503,32 @@ npmCache:
     enabled: true
     consumerNamespaces: []
 
+
+# The BuildKit wake proxy (pkg/buildkit/ec2). The chart runs nothing for it;
+# it ships the proxy's alert rules, so they travel with the proxy.
+wakeProxy:
+  alerts:
+    # One VMRule (VictoriaMetrics operator, group `wake-proxy`) with the rules
+    # WakeProxyDown, WakeProxyAbsent, WakeProxyWakeFailures,
+    # WakeProxyBuilderUnreachable and WakeProxySlowWake (docs/buildkit-on-ec2.md,
+    # "Alerts"). Rendered only when the cluster serves
+    # operator.victoriametrics.com/v1beta1; without it nothing is rendered.
+    enabled: false
+    # The VMRule's name; it lives in the release namespace.
+    name: wake-proxy-alerts
+    # The name of this cluster as its metrics carry it, and the label that
+    # holds it. clusterName is required when enabled: it labels every alert
+    # and selects the series WakeProxyAbsent looks for.
+    clusterName: ""
+    clusterLabel: k8s_cluster_name
+    # The scrape job of the proxy's /metrics.
+    job: wake-proxy
+    thresholds:
+      down: {for: 5m}
+      absent: {for: 15m}
+      wakeFailures: {window: 15m}
+      builderUnreachable: {window: 15m}
+      slowWake:
+        window: 30m
+        # Average seconds per wake over the window above which it alerts.
+        seconds: 120

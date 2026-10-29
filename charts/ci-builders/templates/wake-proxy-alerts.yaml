@@ -1,0 +1,75 @@
+{{- /*
+The alert rules of the BuildKit wake proxy (pkg/buildkit/ec2, "Scraping the
+proxy's metrics across the VPC" in docs/buildkit-on-ec2.md), as one VMRule of
+the VictoriaMetrics operator. Optional: wakeProxy.alerts.enabled, default off.
+
+The proxy's counters restart with every proxy replacement, so the rules read
+increase() and rate(), never the raw counter. The `route` label is the
+architecture the builder serves. The scrape (job wakeProxy.alerts.job) is the
+estate's: this chart renders rules, not scrape objects.
+
+The VMRule is rendered only where the cluster serves its API
+(.Capabilities.APIVersions): without the operator the chart renders nothing
+for it and does not fail.
+*/ -}}
+{{- $a := .Values.wakeProxy.alerts }}
+{{- if and $a.enabled (not $a.clusterName) }}{{ fail "wakeProxy.alerts.clusterName is required: the value of the cluster label on the rules' alerts and in WakeProxyAbsent's selector" }}{{ end }}
+{{- if and $a.enabled (.Capabilities.APIVersions.Has "operator.victoriametrics.com/v1beta1") }}
+{{- $l := $a.clusterLabel }}
+{{- $job := $a.job }}
+{{- $t := $a.thresholds }}
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: {{ $a.name }}
+  labels:
+    app.kubernetes.io/name: ci-builders
+    app.kubernetes.io/component: wake-proxy-alerts
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  groups:
+    - name: wake-proxy
+      rules:
+        - alert: WakeProxyDown
+          expr: up{job={{ $job | quote }}} == 0
+          for: {{ $t.down.for }}
+          labels:
+            {{ $l }}: {{ $a.clusterName }}
+            severity: critical
+          annotations:
+            summary: The BuildKit wake proxy is not answering its metrics scrape
+            description: {{ printf `The wake proxy ({{ $labels.instance }}) has not answered its /metrics scrape for %s. A runner's build cannot wake its on-demand builder while the proxy is down. Check the proxy's Auto Scaling group and its target group.` $t.down.for | quote }}
+        - alert: WakeProxyAbsent
+          expr: absent(up{job={{ $job | quote }}, {{ $l }}={{ $a.clusterName | quote }}})
+          for: {{ $t.absent.for }}
+          labels:
+            {{ $l }}: {{ $a.clusterName }}
+            severity: critical
+          annotations:
+            summary: The BuildKit wake proxy is not scraped at all
+            description: {{ printf `No up{job="%s"} series for %s: the scrape target is gone, not only down. Check the static scrape target of the proxy's metrics, its DNS name and the proxy's metrics listener on the load balancer.` $job $t.absent.for | quote }}
+        - alert: WakeProxyWakeFailures
+          expr: increase(wake_proxy_wake_failures_total[{{ $t.wakeFailures.window }}]) > 0
+          labels:
+            {{ $l }}: {{ $a.clusterName }}
+            severity: warning
+          annotations:
+            summary: {{ `The wake proxy failed to wake the {{ $labels.route }} builder` | quote }}
+            description: {{ printf `The wake proxy could not start the {{ $labels.route }} builder ({{ $value | humanize }} failed wakes in %s). Builds on that architecture wait or fail. Check the builder instance (EC2 start errors, capacity, the cache volume) and the proxy's journal.` $t.wakeFailures.window | quote }}
+        - alert: WakeProxyBuilderUnreachable
+          expr: increase(wake_proxy_dial_failures_total[{{ $t.builderUnreachable.window }}]) > 0 or increase(wake_proxy_resolve_failures_total[{{ $t.builderUnreachable.window }}]) > 0
+          labels:
+            {{ $l }}: {{ $a.clusterName }}
+            severity: warning
+          annotations:
+            summary: {{ `The wake proxy cannot reach the {{ $labels.route }} builder` | quote }}
+            description: {{ printf `The wake proxy failed to resolve or dial the {{ $labels.route }} builder ({{ $value | humanize }} failures in %s) after waking it. The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group.` $t.builderUnreachable.window | quote }}
+        - alert: WakeProxySlowWake
+          expr: (rate(wake_proxy_wake_duration_seconds_sum[{{ $t.slowWake.window }}]) / rate(wake_proxy_wake_duration_seconds_count[{{ $t.slowWake.window }}])) > {{ $t.slowWake.seconds }} and rate(wake_proxy_wake_duration_seconds_count[{{ $t.slowWake.window }}]) > 0
+          labels:
+            {{ $l }}: {{ $a.clusterName }}
+            severity: warning
+          annotations:
+            summary: {{ `Waking the {{ $labels.route }} builder is slow` | quote }}
+            description: {{ printf `Waking the {{ $labels.route }} builder took {{ $value | humanizeDuration }} on average over %s (the proxy's wake timeout is 180 s by default). A cold cache volume or a slow instance start makes the first build of a burst wait.` $t.slowWake.window | quote }}
+{{- end }}

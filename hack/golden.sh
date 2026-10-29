@@ -53,6 +53,15 @@ for chart_dir in charts/*/; do
         preset_args+=(-f "charts/$chart/presets/$preset.yaml")
       done < "$(dirname "$values")/presets"
     fi
+    # A case with an `api-versions` file (one group/version per line) renders
+    # as a cluster serving those APIs (`helm template --api-versions`): the
+    # proof of a template guarded by .Capabilities.APIVersions.Has.
+    if [ -f "$(dirname "$values")/api-versions" ]; then
+      while read -r av; do
+        [ -n "$av" ] || continue
+        preset_args+=(--api-versions "$av")
+      done < "$(dirname "$values")/api-versions"
+    fi
     if ! out=$(helm template "$chart" "$chart_dir" --namespace example "${preset_args[@]}" -f "$values" 2>&1); then
       echo "DID NOT RENDER: $values"
       sed 's/^/    /' <<< "$out" | tail -5
