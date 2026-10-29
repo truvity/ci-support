@@ -8,6 +8,7 @@ together under one version.
 ### Added
 
 - Added: optional `wakeProxy.alerts` VMRule in the `ci-builders` chart: the BuildKit wake proxy's alert rules (`WakeProxyDown`, `WakeProxyAbsent`, `WakeProxyWakeFailures`, `WakeProxyBuilderUnreachable`, `WakeProxySlowWake`, group `wake-proxy`) now ship with the proxy. Off by default (`wakeProxy.alerts.enabled`); `clusterName` is required when on; `clusterLabel`, `job`, `name` and the `for` / window / seconds thresholds are values whose defaults are the rules' standard ones. Rendered only where the cluster serves `operator.victoriametrics.com/v1beta1`, so a cluster without the operator does not fail. The scrape of the proxy's `/metrics` stays the estate's. See docs/buildkit-on-ec2.md, "Alerts". `hack/golden.sh` learns an `api-versions` file per case (`helm template --api-versions`).
+- `pkg/runneridentity` (moved from truvity/ci-plane `deploy/pulumi/runneridentity`, same API).
 
 ## v1.0.0
 
