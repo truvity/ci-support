@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v0.4.0
 
 - **New: `ec2.ProxyArgs.MetricsListenPort`, `MetricsSources` and `MetricsListener` publish the wake proxy's Prometheus metrics on the shared NLB.** With `MetricsListenPort` set, the proxy gets a TCP listener and a target group on that port (HTTP health check `/healthz` on the health port, like the routes), the group is attached to it, the proxy's security group admits the NLB's group on that port, and the proxy binds `0.0.0.0:<port>` unless `MetricsAddress` names a non-loopback host with the same port. The metrics are then scrapable from inside the VPC at `http://<NLB DNS name>:<port>/metrics`, a name that survives instance refreshes. New output `Proxy.MetricsListenPort`. Unset keeps today's behaviour: the existing goldens are unchanged. docs/buildkit-on-ec2.md, "Scraping the proxy's metrics across the VPC".
 
