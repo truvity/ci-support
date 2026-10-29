@@ -347,7 +347,7 @@ runcmd:
         *) bs_die "unsupported architecture $(uname -m)" ;;
       esac
       case "$arch" in
-        arm64) url='https://github.com/truvity/asg/releases/download/v0.8.0/wake-proxy_0.8.0_linux_arm64' sum='abababababababababababababababababababababababababababababababab' ;;
+        arm64) url='https://github.com/truvity/asg/releases/download/v0.9.0/wake-proxy_0.9.0_linux_arm64' sum='abababababababababababababababababababababababababababababababab' ;;
         *) bs_die 'no build of wake-proxy for this architecture' ;;
       esac
       dest='/usr/local/bin/wake-proxy' mode=0755
