@@ -2,7 +2,7 @@
 // no provider in it: the daemon's configuration (buildkitd.toml: garbage
 // collection, parallelism, the mutual-TLS listener, the debug address), its
 // systemd unit with memory limits, the install of a pinned BuildKit release
-// and rootlesskit, the cache volume, and an nftables rule that keeps every
+// and rootlesskit, an nftables rule that keeps every
 // process but root away from the instance metadata service.
 //
 // The daemon runs rootless, as the in-cluster builders do: as the user
@@ -12,10 +12,11 @@
 // why the metadata service is fenced by uid and not by the hop limit alone.
 //
 // The result is a github.com/truvity/asg module: fragments for the
-// user-data (bootstrap), a step that starts the daemon only when the
-// machine goes in service (never in a warm pool), a ready check and a watch
-// check. A provider package (buildkit/ec2) composes it with the certificate
-// and watchdog modules.
+// user-data (bootstrap) of a single instance that is started and stopped
+// from outside: the unit is enabled and starts on every boot. The cache
+// volume is not prepared here (asg's datavolume module mounts it at
+// CacheDir). A provider package (buildkit/ec2) composes it with the
+// certificate module.
 package buildkit
 
 import (
@@ -59,10 +60,6 @@ const (
 	userNSMax    = 63359
 	defaultDebug = "127.0.0.1:6060"
 )
-
-// StartOrder is the order of the in-service step that starts the daemon:
-// after asg's ssmcert module has loaded the certificate (its order 100).
-const StartOrder = 500
 
 // Releases are the pinned downloads per architecture ("amd64", "arm64").
 // The digests are the GitHub release assets' sha256.
@@ -115,25 +112,7 @@ type (
 		// CPUWeight is the unit's CPU weight (others default to 100), so
 		// sshd and the agents win under a burst. Default 50.
 		CPUWeight int
-		// CacheDevice is the block device of the cache volume, such as
-		// /dev/sdf: formatted (xfs) on the first boot if it is empty and
-		// mounted at /var/lib/buildkit on every boot. Required.
-		CacheDevice string
-		// ReadyTimeoutSeconds bounds the wait for the daemon after a start
-		// (loading a large cache takes minutes). Default 600.
-		ReadyTimeoutSeconds int
-
-		// OnDemand renders the daemon for a single instance that is started
-		// and stopped from outside (asg Args.Single, a wake proxy in front)
-		// and has no launch lifecycle: the unit is enabled and starts on
-		// every boot, after BootUnits; there is no in-service step and no
-		// ready check; the cache is NOT formatted or mounted here (asg's
-		// datavolume module mounts the data volume at CacheDir and must be
-		// given buildkitd.service in its Units), and CacheDevice is not
-		// used. The unit makes the mount point the daemon's again on every
-		// start, since a fresh file system is root's.
-		OnDemand bool
-		// BootUnits are the units an OnDemand daemon requires and starts
+		// BootUnits are the units the daemon requires and starts
 		// after, besides the metadata guard (the certificate fetch).
 		BootUnits []string
 	}
@@ -177,10 +156,6 @@ func (c Config) withDefaults() Config {
 		c.CPUWeight = 50
 	}
 
-	if c.ReadyTimeoutSeconds == 0 {
-		c.ReadyTimeoutSeconds = 600
-	}
-
 	if c.GC.ReservedSpace == "" {
 		c.GC.ReservedSpace = "10GB"
 	}
@@ -197,9 +172,8 @@ func (c Config) withDefaults() Config {
 }
 
 var (
-	pathRe   = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
-	deviceRe = regexp.MustCompile(`^/dev/(sd|xvd)[f-p]$`)
-	debugRe  = regexp.MustCompile(`^127\.0\.0\.1:[0-9]{2,5}$`)
+	pathRe  = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
+	debugRe = regexp.MustCompile(`^127\.0\.0\.1:[0-9]{2,5}$`)
 )
 
 func (c Config) validate() error {
@@ -237,14 +211,6 @@ func (c Config) validate() error {
 
 	if c.CPUWeight < 1 || c.CPUWeight > 10000 {
 		add("CPUWeight %d: want 1..10000", c.CPUWeight)
-	}
-
-	if !c.OnDemand && !deviceRe.MatchString(c.CacheDevice) {
-		add("CacheDevice %q: want /dev/sdf to /dev/sdp", c.CacheDevice)
-	}
-
-	if c.ReadyTimeoutSeconds < 30 {
-		add("ReadyTimeoutSeconds %d: want at least 30", c.ReadyTimeoutSeconds)
 	}
 
 	return errors.Join(errs...)
@@ -287,49 +253,14 @@ root = %q
 		c.GC.ReservedSpace, c.GC.MaxUsedSpace, c.GC.MinFreeSpace), nil
 }
 
-// UnitText renders buildkitd.service. It has no [Install] section: only a
-// boot into service starts it.
+// UnitText renders buildkitd.service.
 func (c Config) UnitText() string {
 	c = c.withDefaults()
 
-	if c.OnDemand {
-		return c.onDemandUnitText()
-	}
-
-	return fmt.Sprintf(`[Unit]
-Description=BuildKit daemon (rootless, mutual TLS on :%d)
-Wants=network-online.target
-After=network-online.target %s
-Requires=%s
-RequiresMountsFor=%s
-
-[Service]
-Type=simple
-User=%s
-Group=%s
-Environment=HOME=%s XDG_RUNTIME_DIR=%s
-RuntimeDirectory=buildkit
-RuntimeDirectoryMode=0755
-ExecStart=/usr/local/bin/rootlesskit --state-dir=%s/rootlesskit --net=host /usr/local/bin/buildkitd --config=%s
-Delegate=yes
-KillMode=mixed
-TimeoutStopSec=120
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
-TasksMax=infinity
-MemoryHigh=%d%%
-MemoryMax=%d%%
-CPUWeight=%d
-`, c.Port, GuardUnit, GuardUnit, CacheDir, User, User, HomeDir, SocketDir, SocketDir, ConfigPath,
-		c.MemoryHighPercent, c.MemoryMaxPercent, c.CPUWeight)
-}
-
-// onDemandUnitText is the unit of a daemon that starts on every boot: it is
-// enabled, it requires the guard and the BootUnits, and it hands the mount
-// point of the data volume to its user before it starts. The data volume
-// itself is required by a drop-in of asg's datavolume module.
-func (c Config) onDemandUnitText() string {
+	// The unit starts on every boot: it is enabled, it requires the guard and the
+	// BootUnits, and it hands the mount point of the data volume to its user
+	// before it starts. The data volume itself is required by a drop-in of asg's
+	// datavolume module.
 	deps := strings.Join(append([]string{GuardUnit}, c.BootUnits...), " ")
 
 	return fmt.Sprintf(`[Unit]
@@ -395,17 +326,9 @@ ExecStop=/usr/sbin/nft delete table inet buildkit_imds
 WantedBy=multi-user.target
 `
 
-// installScript creates the user, unpacks the releases and prepares the
-// cache volume. It runs on the first boot (in the warm pool, when there is
-// one); the volume is mounted from fstab on every later boot.
-func installScript(device string) string {
-	return fmt.Sprintf(installHead+installVolume,
-		User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar, device, device[len(device)-1:], CacheLabel, CacheDir)
-}
-
-// installOnDemandScript is the install without the cache volume, which the
-// datavolume module prepares on every boot.
-func installOnDemandScript() string {
+// installScript creates the user and unpacks the releases. The cache volume
+// is not prepared here: the datavolume module does it on every boot.
+func installScript() string {
 	return fmt.Sprintf(installHead, User, HomeDir, subIDStart, subIDCount, releaseTar, rootlessTar)
 }
 
@@ -419,25 +342,6 @@ tar -xzf %[5]s -C /usr/local bin
 tar -xzf %[6]s -C /usr/local/bin rootlesskit rootlessctl
 rm -f %[5]s %[6]s
 sysctl --system >/dev/null
-`
-
-const installVolume = `
-# The cache volume: the launch template's %[7]s, which a Nitro instance shows
-# as an NVMe device behind a udev link.
-dev=""
-for _ in $(seq 1 90); do
-  for c in %[7]s /dev/xvd%[8]s; do
-    if [ -b "$c" ]; then dev="$(readlink -f "$c")"; break 2; fi
-  done
-  sleep 2
-done
-[ -n "$dev" ] || { echo "buildkit: no cache volume at %[7]s" >&2; exit 1; }
-blkid "$dev" >/dev/null 2>&1 || mkfs.xfs -q -L %[9]s "$dev"
-install -d -m 0700 %[10]s
-grep -q 'LABEL=%[9]s ' /etc/fstab || echo 'LABEL=%[9]s %[10]s xfs defaults,noatime,nofail 0 2' >>/etc/fstab
-mountpoint -q %[10]s || mount %[10]s
-chown %[1]s:%[1]s %[10]s
-chmod 0700 %[10]s
 `
 
 // ReadyCheck is the shell check that the daemon answers on its unix socket.
@@ -462,10 +366,6 @@ func (m mod) Contribute() (module.Contribution, error) {
 		return module.Contribution{}, err
 	}
 
-	if c.OnDemand {
-		return m.contributeOnDemand(c, toml, sysctl)
-	}
-
 	frag := bootstrap.Compose("buildkit",
 		bootstrap.Package{Name: "git"},
 		bootstrap.Package{Name: "nftables"},
@@ -476,36 +376,7 @@ func (m mod) Contribute() (module.Contribution, error) {
 		bootstrap.File{Path: ConfigPath, Content: toml, Delivery: bootstrap.DeliveryInline},
 		bootstrap.File{Path: guardPath, Content: GuardRules, Delivery: bootstrap.DeliveryInline},
 		bootstrap.File{Path: sysctlPath, Content: sysctl, Delivery: bootstrap.DeliveryInline},
-		bootstrap.Step{Name: "buildkit install", Script: installScript(c.CacheDevice)},
-		bootstrap.Unit{Name: GuardUnit, Content: guardUnit, Enable: true, Start: true},
-		bootstrap.Unit{Name: Unit, Content: c.UnitText()},
-	)
-
-	return module.Contribution{
-		Fragments: []bootstrap.Fragment{frag},
-		InService: []module.Step{{Name: "buildkitd", Order: StartOrder, Script: "systemctl start " + Unit + "\n"}},
-		ReadyChecks: []module.ReadyCheck{{
-			Name: "buildkitd", Script: ReadyCheck(), TimeoutSeconds: c.ReadyTimeoutSeconds,
-		}},
-		Scrape: []module.ScrapeTarget{{Name: "buildkitd", Address: c.DebugAddress, Path: "/metrics"}},
-	}, nil
-}
-
-// contributeOnDemand is the daemon of a single instance: the same files, the
-// install without the volume, and a unit that is enabled. It has no
-// in-service step and no ready check (there is no launch hook to complete).
-func (m mod) contributeOnDemand(c Config, toml, sysctl string) (module.Contribution, error) {
-	frag := bootstrap.Compose("buildkit",
-		bootstrap.Package{Name: "git"},
-		bootstrap.Package{Name: "nftables"},
-		bootstrap.Package{Name: "shadow-utils"},
-		bootstrap.Package{Name: "xfsprogs"},
-		bootstrap.Binary{Name: "buildkit " + BuildKitVersion, Dest: releaseTar, PerArch: BuildKitRelease},
-		bootstrap.Binary{Name: "rootlesskit " + RootlessKitVersion, Dest: rootlessTar, PerArch: RootlessKitRelease},
-		bootstrap.File{Path: ConfigPath, Content: toml, Delivery: bootstrap.DeliveryInline},
-		bootstrap.File{Path: guardPath, Content: GuardRules, Delivery: bootstrap.DeliveryInline},
-		bootstrap.File{Path: sysctlPath, Content: sysctl, Delivery: bootstrap.DeliveryInline},
-		bootstrap.Step{Name: "buildkit install", Script: installOnDemandScript()},
+		bootstrap.Step{Name: "buildkit install", Script: installScript()},
 		bootstrap.Unit{Name: GuardUnit, Content: guardUnit, Enable: true, Start: true},
 		bootstrap.Unit{Name: Unit, Content: c.UnitText(), Enable: true, Start: true},
 	)
@@ -514,12 +385,6 @@ func (m mod) contributeOnDemand(c Config, toml, sysctl string) (module.Contribut
 		Fragments: []bootstrap.Fragment{frag},
 		Scrape:    []module.ScrapeTarget{{Name: "buildkitd", Address: c.DebugAddress, Path: "/metrics"}},
 	}, nil
-}
-
-// WatchCheck is the watchdog's check of the daemon: the same call as the
-// ready check, so "healthy" means "answers gRPC", not "accepts TCP".
-func WatchCheck() module.WatchCheck {
-	return module.WatchCheck{Name: "buildkitd", Script: ReadyCheck()}
 }
 
 // Arch is the BuildKit name of an architecture given as EC2 names it.

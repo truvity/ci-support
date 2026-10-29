@@ -1,8 +1,5 @@
 # refuses: does not match pattern
 # A URL where a host name is wanted (no scheme, path or port).
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

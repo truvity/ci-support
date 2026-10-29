@@ -140,25 +140,38 @@ func golden(t *testing.T, name, got string) {
 	}
 }
 
+func nlb() front.SharedNLB {
+	return front.SharedNLB{
+		ARN:     "arn:" + part + ":elasticloadbalancing:" + testRegion + ":" + testAccount + ":loadbalancer/net/box-front/0example",
+		DNSName: "box-front-0example.elb.example", ZoneID: "Z0EXAMPLE", SecurityGroupID: "sg-0front", VPCID: "vpc-0example",
+		VPCCIDR: "10.0.0.0/16",
+	}
+}
+
+func sources() []front.Source {
+	return []front.Source{{SecurityGroupID: pulumi.String("sg-0runners"), Description: "the runners"}}
+}
+
+// args are the settings of an arm64 builder.
 func args() *ec2.Args {
 	return &ec2.Args{
+		Mode:         ec2.ModeOnDemand,
 		Arch:         "arm64",
 		Name:         "devel-buildkit-arm64",
 		InstanceType: "m7g.xlarge",
 		VPCID:        pulumi.String("vpc-0example"),
-		SubnetIDs:    []pulumi.StringInput{pulumi.String("subnet-0a"), pulumi.String("subnet-0b")},
-		NLB: front.SharedNLB{
-			ARN:     "arn:" + part + ":elasticloadbalancing:" + testRegion + ":" + testAccount + ":loadbalancer/net/box-front/0example",
-			DNSName: "box-front-0example.elb.example", ZoneID: "Z0EXAMPLE", SecurityGroupID: "sg-0front", VPCID: "vpc-0example",
-			VPCCIDR: "10.0.0.0/16",
-		},
-		Port:    1235,
-		Sources: []front.Source{{SecurityGroupID: pulumi.String("sg-0runners"), Description: "the runners"}},
+		Port:         1235,
 		Certificate: ec2.Certificate{
 			Cert: "/ci/test/buildkit-server/arm64/cert", Key: "/ci/test/buildkit-server/arm64/key", ClientCA: "/ci/test/buildkit-server/client-ca",
 			KeyAlias: "alias/test-ci-buildkit-server",
 		},
 		Daemon: buildkit.Config{MaxParallelism: 6},
+		OnDemand: &ec2.OnDemandArgs{
+			SubnetID:             pulumi.String("subnet-0a"),
+			Zone:                 "eu-west-1a",
+			ProxySecurityGroupID: pulumi.String("sg-0proxy"),
+			DataKMSKeyARN:        "arn:" + part + ":kms:" + testRegion + ":" + testAccount + ":key/0example-key",
+		},
 	}
 }
 
@@ -179,41 +192,6 @@ func run(t *testing.T, a *ec2.Args) (*recorder, *ec2.Builder, error) {
 	return rec, b, err
 }
 
-func TestResourceSet(t *testing.T) {
-	rec, _, err := run(t, args())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	golden(t, "resources.golden.json", rec.dump(t))
-}
-
-func TestUserDataFitsAndGolden(t *testing.T) {
-	_, b, err := run(t, args())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if b.Rendered.Size > 16384 {
-		t.Errorf("user-data is %d bytes", b.Rendered.Size)
-	}
-
-	if len(b.Rendered.Objects) != 0 {
-		t.Errorf("the user-data spilled into %d objects; the builder has no bucket", len(b.Rendered.Objects))
-	}
-
-	golden(t, "userdata.golden.yaml", b.Rendered.CloudConfig)
-
-	for _, want := range []string{
-		"/run/asg-ssmcert/buildkit/cert.pem", "OWNER='buildkit:buildkit'", "GROUP='devel-buildkit-arm64'", "HOOK='devel-buildkit-arm64-launch'",
-		"RESTART_UNITS=('buildkitd.service')", "debug workers",
-	} {
-		if !strings.Contains(b.Rendered.CloudConfig, want) {
-			t.Errorf("user-data lacks %s", want)
-		}
-	}
-}
-
 func TestLaunchTemplateCarriesTheRenderedUserData(t *testing.T) {
 	rec, b, err := run(t, args())
 	if err != nil {
@@ -223,90 +201,6 @@ func TestLaunchTemplateCarriesTheRenderedUserData(t *testing.T) {
 	got, err := base64.StdEncoding.DecodeString(rec.userData)
 	if err != nil || string(got) != string(b.Rendered.UserData) {
 		t.Errorf("launch template user-data differs from the rendered plan (%v)", err)
-	}
-}
-
-func TestPolicy(t *testing.T) {
-	rec, _, err := run(t, args())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pol := rec.find(t, "aws:iam/role:Role", "buildkit-arm64")["inlinePolicies"].([]any)[0].(map[string]any)["policy"].(string)
-	golden(t, "policy.golden.json", pol+"\n")
-
-	for _, want := range []string{
-		`"kms:Decrypt"`, `"alias/test-ci-buildkit-server"`, `"ssm.eu-west-1.amazonaws.com"`,
-		"parameter/ci/test/buildkit-server/arm64/key", "autoscaling:EnterStandby", "autoscaling:SetInstanceHealth",
-	} {
-		if !strings.Contains(pol, want) {
-			t.Errorf("policy lacks %s", want)
-		}
-	}
-
-	for _, refuse := range []string{"ecr:", "s3:", `"Resource": "*"`, `"kms:Encrypt"`} {
-		if strings.Contains(pol, refuse) {
-			t.Errorf("policy holds %s", refuse)
-		}
-	}
-}
-
-func TestOnlyTheFrontReachesTheBox(t *testing.T) {
-	rec, _, err := run(t, args())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var rules []map[string]any
-
-	for _, x := range rec.all {
-		if x["type"] == "aws:vpc/securityGroupIngressRule:SecurityGroupIngressRule" {
-			rules = append(rules, x["inputs"].(map[string]any))
-		}
-	}
-
-	// One rule on the NLB's group (the runners, port 1235) and one on the
-	// box's (the NLB's group, port 1234).
-	if len(rules) != 2 {
-		t.Fatalf("rules %v", rules)
-	}
-
-	for _, r := range rules {
-		switch r["securityGroupId"] {
-		case "sg-0front":
-			if r["referencedSecurityGroupId"] != "sg-0runners" || r["fromPort"] != float64(1235) {
-				t.Errorf("front rule %v", r)
-			}
-		default:
-			if r["referencedSecurityGroupId"] != "sg-0front" || r["fromPort"] != float64(1234) {
-				t.Errorf("box rule %v", r)
-			}
-		}
-	}
-
-	g := rec.find(t, "aws:autoscaling/group:Group", "buildkit-arm64")
-	if g["healthCheckType"] != "ELB" || g["maxSize"] != float64(3) || len(g["targetGroupArns"].([]any)) != 1 {
-		t.Errorf("group %v", g)
-	}
-}
-
-func TestRefusals(t *testing.T) {
-	for name, mut := range map[string]func(*ec2.Args){
-		"arch":    func(a *ec2.Args) { a.Arch = "x86" },
-		"max":     func(a *ec2.Args) { a.Min, a.Max = 1, 1 },
-		"port":    func(a *ec2.Args) { a.Port = 0 },
-		"sources": func(a *ec2.Args) { a.Sources = nil },
-		"cert":    func(a *ec2.Args) { a.Certificate.Key = "" },
-		"alias":   func(a *ec2.Args) { a.Certificate.KeyAlias = "key/1" },
-		"daemon":  func(a *ec2.Args) { a.Daemon.MaxParallelism = 0 },
-		"no nlb":  func(a *ec2.Args) { a.NLB = front.SharedNLB{} },
-	} {
-		a := args()
-		mut(a)
-
-		if _, _, err := run(t, a); err == nil {
-			t.Errorf("%s: no error", name)
-		}
 	}
 }
 

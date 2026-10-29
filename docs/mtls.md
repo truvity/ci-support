@@ -1,107 +1,42 @@
 # Mutual TLS for the BuildKit builders
 
-The builders (`ci-builders`, `buildkitd`) serve plain TCP on :1234 by
-default, gated by a NetworkPolicy alone. `buildkitd.mtls` adds builders that
-terminate mutual TLS themselves, which is what a TLS-passthrough gateway in
-front of them needs; a client presents a certificate from the builders' client
-CA ([Clients outside the cluster](#clients-outside-the-cluster) below). It is
-off by default and changes nothing until set. (In-cluster runners got theirs
-from the `arc-runners` chart's `buildkitTLS`; that chart is archived, last
-released as 7.8.3.)
-
-## Why a second set of builders
-
-BuildKit's TLS settings (`--tlscert`, `--tlskey`, `--tlscacert`) are one
-configuration for the whole process, applied to every `tcp://` `--addr`
-(only `unix://` sockets stay plain; `cmd/buildkitd` `getListener`, checked
-against v0.33.0). One daemon therefore cannot serve plain TCP to runners that
-have not moved and mTLS to those that have. Two daemons cannot share a cache
-directory either. So the transition is a second StatefulSet per architecture,
-`buildkitd-mtls-<arch>`, TLS-only, with its own cache volume, beside the
-plain `buildkitd-<arch>`:
-
-1. `buildkitd.mtls.enabled: true`. Both sets run. A client chooses its
-   builder by endpoint; moving, and moving back, is a client setting.
-2. Clients move (in the shared workflows, by `CI_BUILDKIT_TLS_DIR`).
-3. `buildkitd.mtls.retirePlain: true`. The plain StatefulSets, Services and
-   policies stop rendering. Their cache volumes stay (a StatefulSet does not
-   delete its claims); delete them by hand when the plain builders are
-   confirmed unused.
-
-The TLS builders start with a cold cache. The warm layer is
-`cache-to type=registry`, which a new builder reads from the first build.
-
-## In place: the existing builders become the TLS ones
-
-`buildkitd.mtls.mode: inPlace` is the other way to the same end, for an
-estate that wants neither a second node nor a cold cache. No second set
-renders. The plain StatefulSet `buildkitd-<arch>` itself is changed:
-
-- the server Secret and the client CA ConfigMap are mounted, and
-  `--tlscert/--tlskey/--tlscacert` are set;
-- the plain `tcp://` listener is gone (one process cannot serve both; every
-  `tcp://` `--addr` is wrapped in the same TLS config);
-- the unix socket stays plain, for the readiness probe;
-- the Service, the `cache` volume claim and the node are the same, so the
-  warm cache survives the restart.
-
-There is no period in which both kinds are served. Every client of the
-builders must dial with TLS from the moment the pod restarts, so the runners'
-`buildkitTLS` and the endpoint they dial change in the **same release**. The
-sequence:
-
-1. Run the CI components that understand `CI_BUILDKIT_TLS_DIR` (callers on
-   the release that carries them), and have the client CA, its policy and
-   bundle in place (`clientCA.create: true` renders them whatever the mode).
-2. In one change: `buildkitd.mtls.mode: inPlace` (with `enabled: true`), the
-   runners' `buildkitTLS`, and the clients' endpoint and TLS variables. The
-   builder pods restart once, onto the same volumes.
-3. Rollback is the same change reversed: `mode: parallel` brings the plain
-   listener back on the same cache, with the clients moved back.
-
-`retirePlain` is refused in this mode: there is no plain set to retire. The
-`mtls.networkPolicy.additionalIngress` entries admit the `buildkitd` pods
-(the private gateway, for example), not a second set.
+The builders are `pkg/buildkit/ec2`'s: one on-demand instance per
+architecture, outside the cluster ([buildkit-on-ec2.md](buildkit-on-ec2.md)).
+They serve mutual TLS on :1234 and accept a client only when its certificate
+chains to the ONE client CA. This chart issues the trust and the certificates;
+it never runs a builder. (The in-cluster `buildkitd` StatefulSets, their
+server certificates, NetworkPolicies and the `parallel` / `inPlace` modes were
+removed in v1.0.0, see [CHANGELOG.md](../CHANGELOG.md). In-cluster runners got
+theirs from the `arc-runners` chart's `buildkitTLS`; that chart is archived,
+last released as 7.8.3.)
 
 ## The pieces
 
 | What | Where | Notes |
 |---|---|---|
-| Server certificate, one per arch | `buildkitd.mtls.serverCertificate` | cert-manager `Certificate` from an issuer you name, names you give (`dnsNames.<arch>`). The key and certificate are mounted at `/etc/buildkit/tls`. |
-| Client CA | `buildkitd.mtls.clientCA` | The only authority the builders accept clients from. `create: true` builds it: self-signed Issuer and CA Certificate in cert-manager's namespace, a CA `ClusterIssuer`, an approver-policy `CertificateRequestPolicy` (one common name, client auth, ECDSA, listed namespaces), and a trust-manager `Bundle` publishing the CA certificate, never its key, to the ConfigMap the builders read. |
-| Client certificate | `buildkitd.mtls.clientCA.externalClients` | One `Certificate` per client name, delivered as `ca.pem`, `cert.pem`, `key.pem`; see [Clients outside the cluster](#clients-outside-the-cluster). (The archived `arc-runners` chart's `buildkitTLS` rendered the in-cluster runners' one and mounted it at `CI_BUILDKIT_TLS_DIR`.) |
+| Client CA | `buildkitd.mtls.clientCA` | The only authority the builders accept clients from. `create: true` builds it: self-signed Issuer and CA Certificate in cert-manager's namespace, a CA `ClusterIssuer`, an approver-policy `CertificateRequestPolicy` (one common name, client auth, ECDSA, listed namespaces), and a trust-manager `Bundle` publishing the CA certificate, never its key, to the ConfigMap `clientCA.configMapName`. |
+| Client certificate | `buildkitd.mtls.clientCA.externalClients` | One `Certificate` per client name, delivered as `ca.pem`, `cert.pem`, `key.pem`; see [Clients outside the cluster](#clients-outside-the-cluster). |
+| Server certificate | `externalBuilders` | One per architecture, pushed to a store the machines read; see [Builders outside the cluster](#builders-outside-the-cluster). |
 
-A runner that dials an address which is not a SAN on the builders'
-certificate (the in-cluster Service name, before the runners move to the
-private names) sets `buildkitTLS.serverName`, which becomes
-`CI_BUILDKIT_TLS_SERVERNAME` (the buildx `servername` driver option). It is
-one value for both architectures, so list that name in both architectures'
-`serverCertificate.dnsNames`.
+`buildkitd.enabled` (default true) and `buildkitd.mtls.enabled` (default
+false) gate the client CA and the client certificates; `externalBuilders` has
+its own switch. Any other key under `buildkitd` fails the render with the
+release that removed it.
 
 The client CA is dedicated on purpose. Reusing a general private CA would
 admit any certificate it issues for any other workload.
 
 ## Renewal and rotation
 
-- **Client certificates** (runners) are read by a job when it starts; a pod is
-  ephemeral. A renewal reaches the next job and breaks nothing in flight. The
-  default is 90 days with renewal 30 days before expiry.
+- **Client certificates** are read by a job when it starts. A renewal reaches
+  the next job and breaks nothing in flight. The default is 90 days with
+  renewal 30 days before expiry.
 - **The client CA** lives ten years and its key is never rotated by
   cert-manager (`rotationPolicy: Never`). Replacing it is a new issuer name,
   both CAs in the ConfigMap for a while, then the old one dropped.
-- **Server certificates** are loaded by `buildkitd` once, at start. cert-manager
-  renews the Secret in place, and the daemon keeps serving the old pair until
-  the pod restarts. The restart must happen before the old certificate
-  expires, which with 90 days / renewal at 60 interrupts running builds on that
-  builder. There is no in-process reload to rely on. With
-  `mode: inPlace` the StatefulSets carry stakater/Reloader annotations
-  (`buildkitd.mtls.reloader.enabled`, default on): where Reloader runs it
-  restarts the pod when the Secret (or the client CA ConfigMap) changes, and
-  that restart interrupts the builds running on that builder, once per
-  renewal. Without Reloader, or in `parallel` mode, schedule it in a quiet
-  window (`kubectl rollout restart statefulset/buildkitd-<arch>`, or
-  `buildkitd-mtls-<arch>` in `parallel`), and alert on a `Certificate` that
-  is not Ready.
+- **Server certificates** are loaded by `buildkitd` once, at start. The EC2
+  builders fetch them on every boot and rotate in place when idle
+  (buildkit-on-ec2.md, "On demand").
 
 ## Clients outside the cluster
 
@@ -150,10 +85,9 @@ alone:
 - per architecture in `externalBuilders.archs`, a cert-manager `Certificate`
   (`buildkitd-external-<arch>`, Secret `buildkitd-external-<arch>-tls`) for
   `serverCertificate.dnsNames.<arch>`, from `serverCertificate.issuerRef`.
-  Give it the issuer of `buildkitd.mtls.serverCertificate`, and the names of
-  the in-cluster builders beside the machine's own, so a client verifies
-  either kind of builder against one CA bundle and one servername, and a
-  name can move from one to the other without a new certificate;
+  Name the issuer your clients' CA bundle chains to (the Fargate runners hold
+  its private roots), and list every name a client dials, so that a name can
+  move between machines without a new certificate;
 - per architecture, a `PushSecret` that writes `tls.crt` (with its chain) and
   `tls.key` as `<arch>/<push.names.cert>` and `<arch>/<push.names.key>`;
 - one `PushSecret` that writes the client CA certificate as
@@ -172,7 +106,8 @@ pair.
 
 Renewal: cert-manager renews `renewBefore` ahead of expiry, the `PushSecret`
 pushes on the change and every `refreshInterval`, and the machine picks the
-new parameter version up in its nightly rotation. Nothing is deleted from the
+new parameter version up on its next boot, or in place when idle (see
+[buildkit-on-ec2.md](buildkit-on-ec2.md)). Nothing is deleted from the
 store when an object goes (`deletionPolicy: None`).
 
 ## What this does not do

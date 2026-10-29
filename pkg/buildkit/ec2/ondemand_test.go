@@ -9,7 +9,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/truvity/asg/front"
-	"github.com/truvity/asg/modules/watchdog"
 
 	"github.com/truvity/ci-support/pkg/buildkit/ec2"
 )
@@ -17,30 +16,16 @@ import (
 // The digest is a placeholder: the tests never download.
 var testSHA = strings.Repeat("ab", 32)
 
-func onDemandArgs() *ec2.Args {
-	a := args()
-	a.Mode = ec2.ModeOnDemand
-	a.SubnetIDs, a.NLB, a.Sources = nil, front.SharedNLB{}, nil
-	a.OnDemand = &ec2.OnDemandArgs{
-		SubnetID:             pulumi.String("subnet-0a"),
-		Zone:                 "eu-west-1a",
-		ProxySecurityGroupID: pulumi.String("sg-0proxy"),
-		DataKMSKeyARN:        "arn:" + part + ":kms:" + testRegion + ":" + testAccount + ":key/0example-key",
-	}
-
-	return a
-}
+func onDemandArgs() *ec2.Args { return args() }
 
 func proxyArgs() *ec2.ProxyArgs {
-	a := args()
-
 	return &ec2.ProxyArgs{
 		Name:      "devel-buildkit-proxy",
 		Region:    testRegion,
 		VPCID:     pulumi.String("vpc-0example"),
 		SubnetIDs: []pulumi.StringInput{pulumi.String("subnet-0a"), pulumi.String("subnet-0b")},
-		NLB:       a.NLB,
-		Sources:   a.Sources,
+		NLB:       nlb(),
+		Sources:   sources(),
 		Routes: []ec2.ProxyRoute{
 			{Name: "arm64", Port: 1235, TargetTagValue: "devel-buildkit-arm64"},
 			{Name: "amd64", Port: 1236, TargetTagValue: "devel-buildkit-amd64"},
@@ -81,8 +66,8 @@ func TestOnDemandResourceSet(t *testing.T) {
 
 	golden(t, "ondemand.resources.golden.json", rec.dump(t))
 
-	if b.Front != nil || b.Box.Group != nil || b.Box.Instance == nil || b.Box.DataVolume == nil {
-		t.Errorf("want one instance with a data volume and no group or front: %+v", b)
+	if b.Box.Group != nil || b.Box.Instance == nil || b.Box.DataVolume == nil {
+		t.Errorf("want one instance with a data volume and no group: %+v", b)
 	}
 
 	for _, x := range rec.all {
@@ -196,15 +181,6 @@ func TestOnDemandRefusals(t *testing.T) {
 	for name, mut := range map[string]func(*ec2.Args){
 		"mode":       func(a *ec2.Args) { a.Mode = "spot" },
 		"no options": func(a *ec2.Args) { a.OnDemand = nil },
-		"min":        func(a *ec2.Args) { a.Min = 1 },
-		"max":        func(a *ec2.Args) { a.Max = 3 },
-		"warm pool":  func(a *ec2.Args) { one := 1; a.WarmPoolSize = &one },
-		"subnets":    func(a *ec2.Args) { a.SubnetIDs = []pulumi.StringInput{pulumi.String("subnet-0a")} },
-		"nlb":        func(a *ec2.Args) { a.NLB = args().NLB },
-		"sources":    func(a *ec2.Args) { a.Sources = args().Sources },
-		"listener":   func(a *ec2.Args) { a.Listener = "x" },
-		"cache size": func(a *ec2.Args) { a.CacheVolumeGiB = 100 },
-		"watchdog":   func(a *ec2.Args) { a.Watchdog = new(watchdog.Args) },
 		"subnet":     func(a *ec2.Args) { a.OnDemand.SubnetID = nil },
 		"zone":       func(a *ec2.Args) { a.OnDemand.Zone = "eu-west-1" },
 		"proxy sg":   func(a *ec2.Args) { a.OnDemand.ProxySecurityGroupID = nil },
@@ -213,7 +189,7 @@ func TestOnDemandRefusals(t *testing.T) {
 		"tag key":    func(a *ec2.Args) { a.OnDemand.RoleTagKey = "aws:role" },
 		"port":       func(a *ec2.Args) { a.Port = 80 },
 		"cert":       func(a *ec2.Args) { a.Certificate.Key = "" },
-		"rotation":   func(a *ec2.Args) { a.Rotation.Group = "g" },
+		"rotation":   func(a *ec2.Args) { a.Rotation.Name = "g" },
 		"daemon":     func(a *ec2.Args) { a.Daemon.MaxParallelism = 0 },
 	} {
 		a := onDemandArgs()
@@ -223,27 +199,6 @@ func TestOnDemandRefusals(t *testing.T) {
 			t.Errorf("%s: no error", name)
 		}
 	}
-
-	// OnDemand without the mode is not silently ignored.
-	a := args()
-	a.OnDemand = onDemandArgs().OnDemand
-
-	if _, _, err := run(t, a); err == nil {
-		t.Error("OnDemand with Mode group: no error")
-	}
-}
-
-// The group mode is unchanged by the new field: the zero Mode is the group.
-func TestGroupModeIsTheDefault(t *testing.T) {
-	a := args()
-	a.Mode = ec2.ModeGroup
-
-	rec, _, err := run(t, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	golden(t, "resources.golden.json", rec.dump(t))
 }
 
 func TestProxyResourceSet(t *testing.T) {

@@ -1,0 +1,8 @@
+# refuses: removed `nixWorkers`
+# v1.0.0 removed the Nix workers. Even `enabled: false` is a caller who
+# believes this chart still has them.
+nixWorkers:
+  enabled: false
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

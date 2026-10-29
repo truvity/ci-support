@@ -10,7 +10,6 @@ import (
 
 	"github.com/truvity/asg"
 	"github.com/truvity/asg/bootstrap"
-	"github.com/truvity/asg/front"
 	"github.com/truvity/asg/module"
 	"github.com/truvity/asg/modules/datavolume"
 	"github.com/truvity/asg/modules/ssmcert"
@@ -33,7 +32,7 @@ const (
 	certName = "buildkit"
 )
 
-// OnDemandArgs are the settings of ModeOnDemand: one plain instance that a
+// OnDemandArgs are the settings of a builder: one plain instance that a
 // wake proxy starts when a client connects and stops after it was idle.
 type OnDemandArgs struct {
 	// SubnetID is the instance's subnet and Zone its availability zone,
@@ -100,32 +99,16 @@ func (a Args) withOnDemandDefaults(name string) Args {
 	return a
 }
 
-// validateOnDemand refuses what has no meaning without a group, so that a
-// copied group configuration cannot be silently ignored.
+// validateOnDemand holds the builder to the rules New applies.
 func (a Args) validateOnDemand(raw Args) error {
 	var errs []error
 
 	add := func(format string, v ...any) { errs = append(errs, fmt.Errorf(format, v...)) }
 
 	if raw.OnDemand == nil {
-		add("OnDemand is required with Mode %q", ModeOnDemand)
+		add("OnDemand is required")
 
 		return errors.Join(errs...)
-	}
-
-	for what, set := range map[string]bool{
-		"Min, Max and Desired": raw.Min != 0 || raw.Max != 0 || raw.Desired != 0,
-		"WarmPoolSize":         raw.WarmPoolSize != nil,
-		"SubnetIDs":            len(raw.SubnetIDs) > 0,
-		"NLB":                  raw.NLB != (front.SharedNLB{}),
-		"Listener":             raw.Listener != "",
-		"Sources":              len(raw.Sources) > 0,
-		"CacheVolumeGiB":       raw.CacheVolumeGiB != 0,
-		"Watchdog":             raw.Watchdog != nil,
-	} {
-		if set {
-			add("%s is refused with Mode %q: there is no group, and the listener belongs to the proxy (OnDemand.DataVolumeGiB sizes the cache)", what, ModeOnDemand)
-		}
 	}
 
 	if _, ok := imageParameters[a.Arch]; !ok {
@@ -190,7 +173,7 @@ func (a Args) validateOnDemand(raw Args) error {
 
 	r := a.Rotation
 	if r.Name != "" || r.Cert != "" || r.Key != "" || r.CA != "" || len(r.RestartUnits) > 0 || r.ReadyCheck != "" ||
-		r.DrainPort != 0 || r.Group != "" || r.Hook != "" || r.Dir != "" || r.Owner != "" {
+		r.DrainPort != 0 || r.Dir != "" || r.Owner != "" {
 		add("Rotation: only the timing (CheckIntervalMinutes, WindowStartHour, WindowEndHour, IdleMinutes, " +
 			"ReadyTimeoutSeconds) can be set; the rest is fixed by the builder")
 	}
@@ -212,7 +195,7 @@ func validateCertificate(c Certificate) error {
 	return errors.Join(errs...)
 }
 
-// newOnDemand creates the builder of ModeOnDemand: one plain instance with a
+// newOnDemand creates the builder: one plain instance with a
 // persistent cache volume and nothing in front of it; the proxy owns its run
 // state and the NLB.
 func newOnDemand(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.ResourceOption) (*Builder, error) {
@@ -270,10 +253,10 @@ func newOnDemand(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.Re
 	return &Builder{Box: box, Rendered: rendered, RoleTagKey: o.RoleTagKey, RoleTagValue: o.RoleTagValue}, nil
 }
 
-// InstanceID is the builder's instance (ModeOnDemand only).
+// InstanceID is the builder's instance .
 func (b *Builder) InstanceID() pulumi.StringOutput { return b.Box.Instance.ID().ToStringOutput() }
 
-// DataVolumeID is the cache volume (ModeOnDemand only).
+// DataVolumeID is the cache volume .
 func (b *Builder) DataVolumeID() pulumi.StringOutput { return b.Box.DataVolume.ID().ToStringOutput() }
 
 // SecurityGroupID is the builder's security group.
@@ -289,7 +272,6 @@ func userDataOnDemand(a Args) (*bootstrap.Rendered, asg.Contribution, error) {
 	d := a.Daemon
 	d.TLS = buildkit.TLS{Cert: certFile("cert"), Key: certFile("key"), CA: certFile("ca")}
 	d.Port = DaemonPort
-	d.OnDemand = true
 	d.BootUnits = []string{CertUnit}
 
 	mods, err := asg.Collect(

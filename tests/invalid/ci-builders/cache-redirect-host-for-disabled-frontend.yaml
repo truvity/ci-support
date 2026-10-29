@@ -1,8 +1,5 @@
 # refuses: a host name for a front-end that is off
 # A host is named for the Gradle build cache, which is off by default.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

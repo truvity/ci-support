@@ -1,0 +1,8 @@
+# refuses: removed the in-cluster BuildKit builders, and with them `buildkitd.archs`
+# v1.0.0 removed the StatefulSets. Even `archs: []`, what a consumer that
+# retired them set, is a caller who believes the chart still has the key.
+buildkitd:
+  archs: []
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

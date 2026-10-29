@@ -3,9 +3,6 @@
 # replica into a zone (minDomains 3, so a node class that exists in one zone
 # only still asks the autoscaler for the other two), and a Service that
 # prefers an endpoint in the client's zone.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

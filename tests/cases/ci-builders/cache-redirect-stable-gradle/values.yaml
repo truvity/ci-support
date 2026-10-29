@@ -2,9 +2,6 @@
 # the preview preset does (G2): the stable tier is its own deployment with its
 # own bucket, so only stable jobs write what stable jobs read. Maven is on by
 # default.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

@@ -1,0 +1,6 @@
+# refuses: removed `runnerImage`
+runnerImage:
+  registry: example.ecr/github
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

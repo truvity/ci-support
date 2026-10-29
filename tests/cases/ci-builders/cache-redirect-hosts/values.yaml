@@ -2,9 +2,6 @@
 # front-ends are each served at the ROOT of their own name, so a gateway
 # routes by name and rewrites no path. The Go proxy has none and stays under
 # /goproxy. Over the stable preset, which has the Gradle build cache and npm on.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

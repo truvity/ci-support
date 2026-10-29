@@ -1,8 +1,5 @@
 # The preview preset turns the Gradle remote build cache on in cache-redirect
 # (a writable cache: preview only). Maven is on by default.
-buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
 npmCache:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

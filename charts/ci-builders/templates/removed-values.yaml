@@ -9,11 +9,31 @@ their values from `ci-cache` to `ci-builders` is already editing this
 file and will carry the old block across.
 
 So each removed key fails the render and says where the feature went.
-The check is hasKey, not truthiness: `nixWorkers.accounts.nixremote:
-false` is still a caller who believes the legacy login exists.
+The check is hasKey, not truthiness: `nixWorkers: {enabled: false}` is
+still a caller who believes the feature exists.
 */ -}}
-{{- if hasKey ((.Values.nixWorkers | default dict).accounts | default dict) "nixremote" }}
-{{- fail "ci-builders 5.0.0 removed `nixWorkers.accounts.nixremote`: the legacy `nixremote` login (nix-store --serve) and its shim are gone from the worker image, and `nix` over ssh-ng is the only machine login. Delete the nixremote block from your values; runners connect as nixBuilders.login.user=nix, principal ci-nix, protocol ssh-ng (arc-runners 5.0.0's defaults)." }}
+{{- if hasKey .Values "nixWorkers" }}
+{{- fail "ci-support v1.0.0 removed `nixWorkers`: the persistent Nix remote workers (StatefulSets, SSH and opkssh logins, host certificates, their NetworkPolicy and ServiceAccount) are gone. Delete the `nixWorkers` block (and presets/nix-workers.yaml from your valueFiles); builds that need Nix fetch through the cache-redirect `/nix` front-end (`cacheRedirect.nix`)." }}
+{{- end }}
+{{- if hasKey .Values "nixWorkerImage" }}
+{{- fail "ci-support v1.0.0 removed `nixWorkerImage`: there is no Nix worker to run it. Delete the `nixWorkerImage` block from your values." }}
+{{- end }}
+{{- if hasKey .Values "runnerImage" }}
+{{- fail "ci-support v1.0.0 removed `runnerImage`: only the Nix workers ran it. Delete the `runnerImage` block from your values." }}
+{{- end }}
+{{- if hasKey .Values "sizes" }}
+{{- fail "ci-support v1.0.0 removed `sizes`: it sized the in-cluster buildkitd and the Nix workers, both gone. Delete the `sizes` key from your values." }}
+{{- end }}
+{{- $bk := .Values.buildkitd | default dict }}
+{{- range $k := keys $bk | sortAlpha }}
+{{- if not (has $k (list "enabled" "mtls")) }}
+{{- fail (printf "ci-support v1.0.0 removed the in-cluster BuildKit builders, and with them `buildkitd.%s`: the builders are pkg/buildkit/ec2's, outside the cluster. Only `buildkitd.enabled` and `buildkitd.mtls` (the client CA and its client identities) remain; delete the other keys of `buildkitd` from your values." $k) }}
+{{- end }}
+{{- end }}
+{{- range $k := keys ($bk.mtls | default dict) | sortAlpha }}
+{{- if not (has $k (list "enabled" "clientCA")) }}
+{{- fail (printf "ci-support v1.0.0 removed the in-cluster BuildKit builders, and with them `buildkitd.mtls.%s` (modes parallel and inPlace, retirePlain, the in-cluster server certificates, their NetworkPolicy). Only `buildkitd.mtls.enabled` and `buildkitd.mtls.clientCA` remain; the builders' own server certificates are `externalBuilders.serverCertificate`." $k) }}
+{{- end }}
 {{- end }}
 {{- if hasKey .Values "nixCache" }}
 {{- fail "ci-builders 7.0.0 removed `nixCache`: the nginx read-through cache of the Nix binary cache is gone. Its replacement is the cache-redirect `/nix` front-end (`cacheRedirect.enabled: true`, `cacheRedirect.nix`); point the runners at it with arc-runners' `nixCache.url: http://cache-redirect.<namespace>.svc.cluster.local/nix`. Delete the `nixCache` block from your values (and the `nix-cache-data` PVC it left behind)." }}

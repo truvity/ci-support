@@ -18,14 +18,6 @@
 #                platform without executing anything -- and publishes the
 #                charts.
 #
-# THE TWO IMAGES THIS REPOSITORY DOES NOT BUILD. The chart also names the
-# Nix workers' image (nixWorkerImage) and the runner image (runnerImage),
-# both still published by truvity/ci-plane. They are stamped BY DIGEST
-# from the one ci-plane release CI_PLANE_IMAGES names, resolved here at
-# release time, so the chart is digest-pinned to every image it can run
-# without this repository rebuilding them. Moving that pin is a deliberate
-# edit of CI_PLANE_IMAGES, reviewed like any other pin.
-#
 # The packages are nested under the repository's own name
 # (ghcr.io/truvity/ci-support/...), so GHCR links them to this repository
 # and the first push creates them with this workflow's GITHUB_TOKEN. The
@@ -49,10 +41,6 @@ concurrency:
 env:
   IMAGE_REPO: ghcr.io/truvity/ci-support
   CHARTS: ghcr.io/truvity/ci-support/charts
-  # The ci-plane release whose nix-worker and runner images the chart
-  # pins by digest.
-  CI_PLANE_IMAGES: v8.0.0
-  CI_PLANE_REPO: ghcr.io/truvity/ci-plane
 
 jobs:
   base:
@@ -144,32 +132,11 @@ jobs:
           echo "cache_redirect=${digest}" >> "$GITHUB_OUTPUT"
           echo "cache-redirect image digest: \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
 
-      # The two images ci-plane still publishes, by the digest of the
-      # release CI_PLANE_IMAGES names. A tag that does not resolve fails
-      # the release rather than shipping an unpinned default.
-      - name: Resolve the ci-plane image digests
-        id: plane
-        run: |
-          set -euo pipefail
-          for img in runner nix-worker; do
-            digest=$(docker buildx imagetools inspect "${CI_PLANE_REPO}/${img}:${CI_PLANE_IMAGES}" \
-                       --format '{{json .Manifest.Digest}}' | tr -d '"')
-            case "$digest" in
-              sha256:*) ;;
-              *) echo "::error::${CI_PLANE_REPO}/${img}:${CI_PLANE_IMAGES} did not resolve to a digest"; exit 1 ;;
-            esac
-            echo "${img//-/_}=${digest}" >> "$GITHUB_OUTPUT"
-            echo "${img} image (ci-plane ${CI_PLANE_IMAGES}) digest: \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
-          done
-
-      # BY KEY, never by a blind sed over every `digest:` line: with three
-      # images that would write one image's digest into another's key.
+      # BY KEY, never by a blind sed over every `digest:` line.
       - name: Stamp the digests into chart defaults
         run: |
           set -euo pipefail
           ./hack/stamp-digests.sh \
-            "runnerImage=${{ steps.plane.outputs.runner }}" \
-            "nixWorkerImage=${{ steps.plane.outputs.nix_worker }}" \
             "cacheRedirectImage=${{ steps.images.outputs.cache_redirect }}"
           VERSION="${GITHUB_REF_NAME#v}"
           for c in charts/*/Chart.yaml; do

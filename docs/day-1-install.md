@@ -13,7 +13,7 @@ steps are in
    and the **runner namespaces** allowed to reach it. The chart takes
    the namespace from the release; two things outside it still assume
    the maintainers' name `ci-cache`, or want a cache URL:
-   - the published runner and nix-worker images list only
+   - the published runner images list only
      `https://cache.nixos.org/` as their Nix substituter (v7.0.0; earlier
      images baked an in-cluster name). To use the cache-redirect `/nix`
      front-end, give the runners a `NIX_CONFIG` with
@@ -55,93 +55,36 @@ steps are in
    gateway that routes by name, `cacheRedirect.hosts.{nix,maven,gradle,npm}`
    serve each of those at the root of a host name of its own, so the gateway
    rewrites no path.
-4. For persistent Nix workers:
-   - an OpenBao SSH user CA (secrets engine mount, default `ssh`) with a
-     signing role (default `ci-nix`) that allows the principal `ci-nix`
-     and caps certificates at one hour; its public keys go to
-     `nixWorkers.ssh.trustedUserCAKeys` here;
-   - per runner pool, an OpenBao login role bound exactly to the
-     runners' identity, whose token may only sign on that role;
-   - an OpenBao SSH HOST CA (`nixWorkers.openbao.hostSshMount`/
-     `hostSshRole`, `cert_type=host`) with a login role for the workers'
-     own ServiceAccount (`nixWorkers.openbao.*`); its public key goes
-     into the runners' `known_hosts` as an `@cert-authority` line for the
-     worker Service names.
 
-   Each runner generates its client key inside its own pod and receives a
-   short-lived certificate; each worker generates its HOST key inside its
-   own pod and receives a host certificate. No client private key, host
-   private key, `authorized_keys` or `known_hosts` Secret exists. Do not
-   add engineer keys or expose worker Services outside the cluster. See
-   [architecture.md](architecture.md#worker-host-certificates-and-ephemeral-host-keys).
+## Placement: node classes
 
-   **Without host certificates** (`nixWorkers.hostCertificate.enabled:
-   false`, the explicit static-key path) the workers need a stable host
-   key instead — a Secret named by `nixWorkers.ssh.existingSecret`,
-   delivered by the estate's secret manager, containing
-   `ssh_host_ed25519_key` — and the runners pin it in a `known_hosts`
-   for both worker Service FQDNs.
+The chart knows no node pool, label or taint of any platform. `nodeClasses`,
+which you define, carries them.
 
-## Placement and sizes: node classes and sizes
-
-The chart knows no node pool, label, taint or builder size of any
-platform. Two maps, which you define, carry them.
-
-### Node classes: where a pod goes
-
-`nodeClasses` maps a name you choose to a `nodeSelector` and
-`tolerations`. Everything else refers to the name: `nodeClass` (the whole
-release), `buildkitd.scheduling.<arch>.nodeClass` and
-`nixWorkers.scheduling.<arch>.nodeClass`. The tier presets refer to class
-names only:
-
-| preset | class names it refers to |
-|---|---|
-| `presets/preview.yaml`, `presets/stable.yaml` | `builders-arm64`, `builders-amd64`, `cache-plane` |
-| `presets/nix-workers.yaml` | `nix-workers-arm64`, `nix-workers-amd64` |
+`nodeClasses` maps a name you choose to a `nodeSelector` and `tolerations`.
+`nodeClass` (the whole release) refers to the name, and places the caches
+(bazel-remote and the npm cache). The tier presets refer to one class name,
+`cache-plane`.
 
 A class a preset or a values file names but you did not define is a render
-error, so a typo cannot schedule a builder anywhere. A class that places
-nothing is defined empty (`cache-plane: {}`). The chart adds
-`kubernetes.io/arch` to a builder's selector itself, so a class carries
-the pool, not the architecture.
+error, so a typo cannot schedule a pod anywhere. A class that places nothing
+is defined empty (`cache-plane: {}`).
 
 - **Talos, kind, fixed nodes.** Map a class to labels you put on the
   nodes (Talos: `machine.nodeLabels`, and `registerWithTaints` for a taint),
-  or to nothing. [examples/talos](../examples/talos) is a complete
-  values file; CI renders it and fails if the render mentions Karpenter or
-  EKS.
+  or to nothing. `tests/cases/ci-builders/talos` is a complete values file;
+  CI renders it and fails if the render mentions Karpenter or EKS.
 - **EKS with Karpenter or Auto Mode.** Map a class to the pool's label and
-  taint, e.g. `nodeClasses.builders-arm64.nodeSelector:
+  taint, e.g. `nodeClasses.cache-plane.nodeSelector:
   {karpenter.sh/nodepool: <pool>}`, and list `presets/karpenter.yaml`.
 
 An explicit release-wide `nodeSelector` / `tolerations`, when not empty,
 wins over the release-wide class's own for that one key.
 
-### Sizes: how big a builder is
-
-`sizes` maps a name you choose to what a size means; the chart ships none
-and its schema requires none. A size is `resources` and `maxParallelism`
-(buildkitd) or `resources`, `maxJobs` and `cores` (nixWorkers), picked
-with `buildkitd.size` / `nixWorkers.size`. A size REPLACES the component's
-own value for each key it sets, because the chart's defaults for those
-keys cannot be told from yours. [examples/talos](../examples/talos) has a
-taxonomy.
-
-### Moving from the v6 presets
-
-v6's presets carried a Karpenter pool, its taint and the sizes. v7's carry
-names. To keep v6's render byte for byte: state the old pool as a class and
-the old numbers as sizes, and list
-`presets/karpenter.yaml` for `karpenter.sh/do-not-disrupt` and
-`storageClassName: gp3`.
-
 ### The Karpenter preset
 
 `presets/karpenter.yaml` is the opt-in for the one assumption a platform
-adds beyond placement: `buildkitd` and `nixWorkers` `podAnnotations:
-{karpenter.sh/do-not-disrupt: "true"}`, and `storageClassName: gp3`
-(EKS's EBS class).
+adds beyond placement: `storageClassName: gp3` (EKS's EBS class).
 
 An empty `storageClassName` renders no `storageClassName` field on a PVC
 at all, which Kubernetes reads as "use the cluster's default
@@ -157,9 +100,8 @@ own facts, which win) and Helm as `-f`:
 | preset | what it sets |
 |---|---|
 | `presets/karpenter.yaml` | the Karpenter assumptions above; opt-in |
-| `presets/preview.yaml` | buildkitd per arch on classes `builders-arm64`/`-amd64`, 10Gi, `maxParallelism`, all caches on |
-| `presets/stable.yaml` | buildkitd on the same classes, pull-through caches only, a sized nix cache |
-| `presets/nix-workers.yaml` | the persistent Nix workers on, CI-only login, host certificates |
+| `presets/preview.yaml` | all caches on, on class `cache-plane` |
+| `presets/stable.yaml` | pull-through caches only, on class `cache-plane` |
 
 A preset holds no registry, organization, CA key, OpenBao address,
 namespace or bucket: those stay the caller's values, and the chart still
@@ -170,35 +112,30 @@ refuses to render without the ones it requires.
 ```bash
 helm install ci-builders oci://ghcr.io/truvity/ci-support/charts/ci-builders \
   --version <X.Y.Z> -n <namespace> \
-  --set buildkitd.networkPolicy.consumerNamespaces={<runner namespace>} \
-  --set npmCache.networkPolicy.consumerNamespaces={<runner namespace>} \
-  --set nixWorkers.enabled=true \
-  --set-string 'nixWorkers.ssh.trustedUserCAKeys[0]=ssh-ed25519 <CA-PUBLIC-BODY>' \
-  --set nixWorkers.networkPolicy.consumerNamespaces={<runner namespace>} \
-  # per-arch dedicated pool split, storage class, sizes, registry overrides as needed
+  --set npmCache.networkPolicy.consumerNamespaces={<runner namespace>}
+  # storage class, node classes, registry overrides as needed
 ```
 
 **Required, with no default:** each enabled component's
-`networkPolicy.consumerNamespaces` — `buildkitd`, `npmCache`, and
-`nixWorkers` when enabled — while its `networkPolicy.enabled` is true
-(the default). A builder behind a policy that admits nobody cannot work,
+`networkPolicy.consumerNamespaces` — `npmCache`, `bazelRemote` and
+`cacheRedirect` — while its `networkPolicy.enabled` is true
+(the default). A cache behind a policy that admits nobody cannot work,
 so the chart's `values.schema.json` refuses the empty list instead of
 rendering it. List your runner namespaces, or set that component's
 `networkPolicy.enabled: false`.
 
 Key values (see the chart's values.yaml for the full annotated set):
-`buildkitd.archs`, `buildkitd.scheduling.<arch>` (a `nodeClass`, or
-nodeSelector + tolerations per arch, REPLACING the default when set),
-`nixWorkers.scheduling.<arch>`, `nodeClasses`, `sizes`, `storageClassName`
-(empty by default; see "Placement and sizes" above). A Nix worker is privileged so
-its daemon can create Linux sandboxes: enabling it without selecting a
-dedicated, tainted CI/build pool is not a supported production shape.
+`nodeClasses`, `storageClassName` (empty by default; see "Placement" above).
+
+The builders themselves are not in this chart: they are
+`pkg/buildkit/ec2`'s ([buildkit-on-ec2.md](buildkit-on-ec2.md)). What the
+chart renders for them (the client CA, the client certificates and the
+builders' server certificates) is [mtls.md](mtls.md).
 
 ## Wiring workflows
 
-Runners in the cluster reach the caches by cluster DNS (from outside it,
-buildkitd over mutual TLS, [mtls.md](mtls.md)):
-`buildkitd-<arch>.<namespace>.svc:1234` (buildx `--driver remote`),
+Runners in the cluster reach the caches by cluster DNS (the builders are
+outside it, behind mutual TLS, [mtls.md](mtls.md)):
 `cache-redirect.<namespace>.svc/nix` (nix substituter), `/goproxy` (GOPROXY) and `/maven/<repo>` (Gradle and Maven repositories),
 `bazel-remote.<namespace>.svc:9092` (moon remote cache; the port declares `appProtocol: kubernetes.io/h2c`, so a gateway can publish it over an HTTPRoute),
 `npm-cache.<namespace>.svc` (yarn/npm/pnpm `npmRegistryServer`, public

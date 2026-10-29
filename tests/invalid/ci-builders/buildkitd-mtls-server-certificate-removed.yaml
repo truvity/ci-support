@@ -1,0 +1,11 @@
+# refuses: `buildkitd.mtls.serverCertificate`
+# The in-cluster builders' server certificates are gone; the builders' own
+# are externalBuilders.serverCertificate.
+buildkitd:
+  mtls:
+    enabled: true
+    serverCertificate:
+      issuerRef: {name: example-private}
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

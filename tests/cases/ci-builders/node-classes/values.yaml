@@ -1,0 +1,14 @@
+# Node classes at their edges: the release-wide class placing the caches, and
+# an explicit nodeSelector winning over the class's own for that one key.
+nodeClass: shared
+nodeClasses:
+  shared:
+    nodeSelector: {example.com/pool: shared, example.com/zone: a}
+    tolerations:
+      - {key: example.com/shared, operator: Exists}
+nodeSelector: {example.com/zone: b}
+bazelRemote:
+  enabled: true
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

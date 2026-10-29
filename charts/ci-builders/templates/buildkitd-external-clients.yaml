@@ -1,7 +1,6 @@
 {{- /*
 Client certificates for runners that live OUTSIDE this cluster (for example
-serverless runners), beside the in-cluster runners' own (arc-runners
-buildkitTLS). Each entry of buildkitd.mtls.clientCA.externalClients is one
+serverless runners), beside the client CA's own policy. Each entry of buildkitd.mtls.clientCA.externalClients is one
 identity of its own, not a copy of the runners':
 
   - a cert-manager Certificate in the release namespace, from the client CA's

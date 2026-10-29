@@ -1,9 +1,8 @@
 [Unit]
 Description=BuildKit daemon (rootless, mutual TLS on :1234)
 Wants=network-online.target
-After=network-online.target buildkit-imds-guard.service
-Requires=buildkit-imds-guard.service
-RequiresMountsFor=/var/lib/buildkit
+After=network-online.target buildkit-imds-guard.service buildkit-cert.service
+Requires=buildkit-imds-guard.service buildkit-cert.service
 
 [Service]
 Type=simple
@@ -12,7 +11,9 @@ Group=buildkit
 Environment=HOME=/var/lib/buildkit-home XDG_RUNTIME_DIR=/run/buildkit
 RuntimeDirectory=buildkit
 RuntimeDirectoryMode=0755
-ExecStart=/usr/local/bin/rootlesskit --state-dir=/run/buildkit/rootlesskit --net=host /usr/local/bin/buildkitd --config=/etc/buildkit/buildkitd.toml
+ExecStartPre=+/usr/bin/chown buildkit:buildkit /var/lib/buildkit
+ExecStartPre=+/usr/bin/chmod 0700 /var/lib/buildkit
+ExecStart=/usr/local/bin/rootlesskit --state-dir=/var/lib/buildkit/rootlesskit --net=host /usr/local/bin/buildkitd --config=/etc/buildkit/buildkitd.toml
 Delegate=yes
 KillMode=mixed
 TimeoutStopSec=120
@@ -23,3 +24,6 @@ TasksMax=infinity
 MemoryHigh=85%
 MemoryMax=92%
 CPUWeight=50
+
+[Install]
+WantedBy=multi-user.target

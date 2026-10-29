@@ -1,18 +1,8 @@
-# The in-place TLS builders with one external client identity (a runner that
-# lives outside the cluster): its own Certificate and policy, and a PushSecret
-# to a secret store the estate owns.
+# One external client identity (a runner that lives outside the cluster): its
+# own Certificate and policy, and a PushSecret to a secret store the estate owns.
 buildkitd:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
   mtls:
     enabled: true
-    mode: inPlace
-    serverCertificate:
-      issuerRef:
-        name: example-private
-      dnsNames:
-        arm64: [buildkitd-arm64.example.private]
-        amd64: [buildkitd-amd64.example.private]
     clientCA:
       create: true
       requesterNamespaces: [arc-runners-example]
@@ -32,8 +22,5 @@ buildkitd:
               MIIBexample
               -----END CERTIFICATE-----
 npmCache:
-  networkPolicy:
-    consumerNamespaces: [arc-runners-example]
-nixWorkers:
   networkPolicy:
     consumerNamespaces: [arc-runners-example]

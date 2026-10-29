@@ -6,40 +6,11 @@ Empty registry means the repository's default registry.
 {{- if .registry }}{{ .registry }}/{{ end }}{{ .repository }}:{{ .tag }}
 {{- end -}}
 
-{{- /*
-The runner image: digest-pinned when the release stamped one, tag
-otherwise (dev/lint renders).
-*/ -}}
-{{- define "ci-builders.runnerImage" -}}
-{{- include "ci-builders.pinnedImage" .Values.runnerImage -}}
-{{- end -}}
-
-{{/*
-The nix worker's own image (2026-09-24). It used to run the RUNNER
-image, with Kubernetes choosing the role by overriding the command --
-which worked, and meant neither half could be tuned for what it is: the
-worker carried a docker client, buildx, devbox, goreleaser and two cache
-clients it never used.
-
-v5.0.0 removed the fallback to runnerImage: the runner image no longer
-carries sshd's config, the worker scripts or any machine login, so a
-worker on it could never start. A values file that empties
-nixWorkerImage.repository is refused instead.
-*/ -}}
-{{- define "ci-builders.nixWorkerImage" -}}
-{{- $i := .Values.nixWorkerImage -}}
-{{- if not (and $i $i.repository) -}}
-{{- fail "nixWorkerImage.repository is required when nixWorkers is enabled: since v5.0.0 the workers no longer fall back to runnerImage, which carries no worker role" -}}
-{{- end -}}
-{{- include "ci-builders.pinnedImage" $i -}}
-{{- end -}}
-
 {{/*
 One RELEASE image reference, digest-pinned when a release stamped one and
 tagged otherwise. Distinct from `ci-builders.image` above, which is the
 tag-only form the upstream components use and which has no digest to
-stamp. Shared by the runner and the worker so the two cannot drift in HOW
-they are referenced, only in what they point at.
+stamp.
 */ -}}
 {{- define "ci-builders.pinnedImage" -}}
 {{- if .digest -}}
@@ -47,19 +18,6 @@ they are referenced, only in what they point at.
 {{- else -}}
 {{ .registry }}/{{ .repository }}:{{ .tag }}
 {{- end -}}
-{{- end -}}
-
-{{- /*
-The one architecture's worker's own SSH host-certificate principal name.
-COMPUTED from the release namespace, never a raw value -- an estate names
-its own hosts everywhere else, but a public repository must not invite
-one into pasting a cluster- or estate-specific hostname into a values
-file for the one thing that has to match the worker's actual DNS name
-exactly. Matches the Service this chart already renders
-(templates/nix-workers.yaml: `nix-worker-<arch>`).
-*/ -}}
-{{- define "ci-builders.nixWorkerHostPrincipal" -}}
-{{- printf "nix-worker-%s.%s.svc.cluster.local" .arch .namespace -}}
 {{- end -}}
 
 {{- /*
@@ -87,9 +45,9 @@ Takes a dict `{root, name}`.
 {{- /*
 Where a pod goes, as JSON {nodeSelector, tolerations}.
 
-`sched` is a per-architecture block (buildkitd.scheduling.<arch>,
-nixWorkers.scheduling.<arch>) or empty; `arch` is the architecture for
-those two, empty for a component with none.
+`sched` is a per-component block with its own nodeClass / nodeSelector /
+tolerations, or empty; `arch` is the architecture it is for, empty for a
+component with none (the caches).
 
   - sched.nodeSelector / sched.tolerations, when set, are used as given
     (they REPLACE; the arch selector is then the caller's to write).
@@ -126,47 +84,4 @@ those two, empty for a component with none.
 {{- $tolerations = $root.Values.tolerations | default $global.tolerations | default (list) -}}
 {{- end -}}
 {{- dict "nodeSelector" $nodeSelector "tolerations" $tolerations | toJson -}}
-{{- end -}}
-
-{{- /*
-A size by name (values.sizes), as JSON: what a component's `size` key
-names. Applied by buildkitd.yaml and nix-workers.yaml over a copy of the
-component's values: a size REPLACES the component's own value for each key
-it sets (the chart's defaults for those keys cannot be told from yours, so
-a merge would leave stray defaults behind, e.g. a request). An undefined
-name is a render error.
-
-Takes a dict `{root, size, name}`; `name` is the component, for the message.
-*/ -}}
-{{- define "ci-builders.sizeOf" -}}
-{{- $root := .root -}}
-{{- $sizes := $root.Values.sizes | default (dict) -}}
-{{- if not (hasKey $sizes .size) }}{{ fail (printf "%s.size %q is not defined: add it under sizes (defined: [%s])" .name .size (keys $sizes | sortAlpha | join ", ")) }}{{ end -}}
-{{- get $sizes .size | default (dict) | toJson -}}
-{{- end -}}
-
-{{- /*
-The buildkitd container's probes: readiness always, liveness and startup when
-enabled. All three run the same check, `buildctl debug workers` against the
-daemon's own address (.addr), so a daemon that cannot answer it is one that
-cannot take a build. Liveness without startup is refused: the daemon can need
-minutes to load its cache index after a restart, and a liveness probe that
-starts at once would kill it before it is ready.
-*/ -}}
-{{- define "ci-builders.buildkitdProbes" -}}
-{{- $probes := .probes -}}
-{{- if and $probes.liveness.enabled (not $probes.startup.enabled) }}{{ fail "buildkitd.probes.liveness.enabled needs buildkitd.probes.startup.enabled: without a startup probe the liveness probe would restart a daemon that is still loading its cache" }}{{ end -}}
-{{- range $name := list "readiness" "liveness" "startup" }}
-{{- $p := index $probes $name }}
-{{- if or (eq $name "readiness") $p.enabled }}
-{{ $name }}Probe:
-  exec:
-    command: {{ list "buildctl" "--addr" $.addr "debug" "workers" | toJson }}
-  {{- range $k := list "initialDelaySeconds" "periodSeconds" "timeoutSeconds" "failureThreshold" }}
-  {{- if hasKey $p $k }}
-  {{ $k }}: {{ index $p $k }}
-  {{- end }}
-  {{- end }}
-{{- end }}
-{{- end }}
 {{- end -}}

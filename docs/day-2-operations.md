@@ -13,8 +13,7 @@ git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
 
 The Release workflow does the rest: the cache-redirect image built
 natively per architecture and merged into a manifest list, its digest
-and the pinned ci-plane release's nix-worker and runner digests stamped
-into the chart defaults by key, the chart stamped with the tag's version
+stamped into the chart defaults by key, the chart stamped with the tag's version
 and published to `oci://ghcr.io/truvity/ci-support/charts/ci-builders`. Semver intent: patch = refresh/mechanics, minor = chart
 features or new tools in the image, major = breaking values. Add the
 version's `## vX.Y.Z` heading to [CHANGELOG.md](../CHANGELOG.md) before
@@ -88,10 +87,10 @@ Never delete published versions.
 
 ## Cache operations
 
-Every cache is disposable: delete the PVC, it re-warms. buildkitd's
+Every cache is disposable: delete the PVC, it re-warms. The builders'
 warm layer lives in the registry (`cache-to type=registry`) and
 survives builder replacement — expect one slower build cycle after a
-PVC reset, not breakage. The nix, npm and Bazel caches degrade to
+cache volume reset, not breakage. The nix, npm and Bazel caches degrade to
 upstream when down.
 
 The Gradle build cache of cache-redirect (preview only) is the one cache a job can write. If an entry is ever wrong, delete the object under
@@ -120,110 +119,6 @@ counts objects discarded rather than committed half-written. A runner
 that cannot follow a redirect (no route to the bucket's endpoint) fails
 its download while the service looks healthy: check the runner side
 first.
-
-## Persistent Nix worker operations
-
-The workers are CI-only. Diagnose them from an in-cluster Job or a
-manually dispatched ARC workflow. Each client private key is unique to
-one runner pod, each host private key (with host certificates, the
-default) to one worker pod, and neither is persisted in a Kubernetes
-Secret, but trusted workflow code
-can read and copy it from `/home/runner/.ssh`, and read the projected
-token the job-started hook signs with; namespace ingress, the one-hour
-certificate lifetime and the single-job pod bound that accepted CI-only
-risk. A useful smoke builds one tiny derivation on each advertised
-system, repeats it to prove store reuse, rejects an arbitrary SSH
-command, and then makes OpenBao unavailable to prove local fallback.
-
-Each architecture owns a disposable persistent store. Deleting its PVC
-loses reuse but not source artifacts; the init container reseeds the Nix
-runtime closure and later CI jobs warm it again. Worker readiness checks
-the daemon socket, daemon PID, sshd PID, trusted client CA and local SSH
-port, and -- with host certificates -- that the current certificate
-certifies this pod's own host key with at least `minRemaining` left
-(readiness only). An SSH connection is not sufficient proof: verify a
-remote derivation and copied-back output.
-
-### Signer outage and authorization failures
-
-Signing runs twice per runner: in the init container for a cold pod and
-in the `ACTIONS_RUNNER_HOOK_JOB_STARTED` script when the job starts. Both
-write an empty `/etc/nix-builders/machines` before contacting OpenBao.
-DNS, TLS, login or signing failure logs one warning, removes any staged
-key and exits successfully; the job then builds locally. In init, a
-missing CA/config/known-hosts mount is a deployment error and correctly
-blocks the pod rather than silently weakening trust. In the hook nothing
-fails the job: any error, including a crash or the two-minute timeout,
-empties the machines file and removes the key. The job log's
-"job started" hook step says which way it went (`remote builders
-enabled` or `Nix builds locally`).
-
-Each organization's login role is independently revocable. Removing one
-role or its sign-only policy prevents new certificates immediately, but
-already-issued certificates remain valid for at most one hour. Removing
-the CA public key from workers revokes every organization immediately
-and is therefore a break-glass action.
-
-### SSH user-CA rotation
-
-Never replace the CA in place. Stand up the new CA (for example a second
-SSH mount) and export both public keys. Workers first roll to trust
-both; then runner configuration (`sshMount`, `sshCAPublicKeys`) moves
-signing to the new one. Recycle all warm runners or wait the one-hour
-maximum before removing the old public key from the workers.
-
-### opkssh (the people pilot): people, enable/disable and diagnosis
-
-`nixWorkers.opkssh.archs` is the one switch: an architecture named
-there gets `NIX_WORKER_OPKSSH_ENABLED=true`, admits `admin` (a real
-shell, `sudo`) and `nix` (the same `nix-daemon --stdio` account phase 2
-above uses) through opkssh, no OpenBao certificate involved. An
-architecture NOT named there renders exactly as before this feature
-existed, even sharing the same image and the same opkssh ConfigMap — a
-provider/group edit or flipping an architecture in or out of the
-allow-list both roll the StatefulSet (`checksum/nix-worker-opkssh`).
-
-Diagnosis is `kubectl logs` on the worker pod: sshd runs with `-e`
-(log to its own stderr, which is the container's stdout), so
-`AuthorizedKeysCommand`'s own output — `opkssh verify <user> ...`,
-`Providers loaded: ...`, and either `successfully verified` or `failed
-to verify: <reason>` — appears there directly. `/var/log/opkssh.log`
-(opkssh's own hardcoded path) is deliberately NOT mounted: the pod runs
-`readOnlyRootFilesystem: true` and opkssh degrades gracefully when it
-cannot open that file (logs "Error opening log file" to stderr, once,
-and continues), so `kubectl logs` is the pilot's whole audit trail, not
-a missing feature.
-
-A rejected sign-in that never reaches opkssh at all logs `User <name>
-from <ip> not allowed because not listed in AllowUsers` instead — that
-means the architecture is not in `opkssh.archs`, not a policy refusal.
-ci-plane's `hack/nix-worker-principals-e2e.sh` proves both shapes against the real
-image without a live OIDC provider (a plain, non-certificate key
-reaches `opkssh verify` and is refused BY opkssh; with the feature off,
-the same key never gets that far).
-
-### Host-key rotation
-
-With host certificates (the default since v5.0.0) there is nothing to
-rotate: every worker pod generates its own ephemeral host key at start,
-so restarting a StatefulSet IS a host-key rotation, needs no window, and
-clients notice nothing -- they trust the host CA, not the key. What can
-need rotating is the host CA itself: the same two-step as the user CA
-above. Add the new CA's public key as a second
-`nixBuilders.knownHosts.certAuthorities` entry, let ARC recycle every
-warm runner, move the workers' signing to the new CA (their next
-restart or renewal picks it up), and only then remove the old entry.
-
-The explicit static-key path (`nixWorkers.hostCertificate.enabled:
-false`) keeps the old procedure and its maintenance window, because sshd
-loads its host private key only at process start. First add the new
-host public key alongside the old one in both namespace-local
-`known_hosts` values, bump `nixBuilders.knownHosts.revision`, and verify
-ARC has recycled every warm runner before changing the server key. Then
-update the server host key, sync its Secret, and restart both worker
-StatefulSets. Smoke both organizations and architectures before removing
-the old `known_hosts` entries. Roll back by restoring the previous
-server key and restarting both StatefulSets.
 
 ## npm read-through (verdaccio)
 

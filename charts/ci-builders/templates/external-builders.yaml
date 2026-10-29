@@ -5,9 +5,7 @@ estate owns (Parameter Store, for one) instead of mounting a Secret. The
 chart issues it here and pushes it there; it never runs those builders.
 
   - per architecture, a cert-manager Certificate for the names clients dial,
-    from the estate's issuer (the same issuer as the in-cluster builders'
-    serverCertificate, so a client verifies either kind of builder against
-    one CA bundle), and a PushSecret that writes tls.crt and tls.key as
+    from the estate's issuer, and a PushSecret that writes tls.crt and tls.key as
     <arch>/<names.cert> and <arch>/<names.key>;
   - one PushSecret that writes the client CA certificate as names.clientCA:
     the one authority the builders accept client certificates from.
@@ -60,7 +58,7 @@ spec:
   commonName: {{ first $dns | quote }}
   dnsNames:
     {{- toYaml $dns | nindent 4 }}
-  {{- /* No usages, as the in-cluster serverCertificate: an issuer whose
+  {{- /* No usages: an issuer whose
          approver policy lists none denies a request that names any. */}}
   duration: {{ $cert.duration }}
   renewBefore: {{ $cert.renewBefore }}

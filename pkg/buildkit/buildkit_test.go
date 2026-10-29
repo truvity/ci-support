@@ -39,7 +39,7 @@ func config() buildkit.Config {
 	return buildkit.Config{
 		MaxParallelism: 6,
 		TLS:            buildkit.TLS{Cert: "/run/tls/cert.pem", Key: "/run/tls/key.pem", CA: "/run/tls/ca.pem"},
-		CacheDevice:    "/dev/sdf",
+		BootUnits:      []string{"buildkit-cert.service"},
 	}
 }
 
@@ -62,11 +62,10 @@ func TestUnitGolden(t *testing.T) {
 	u := config().UnitText()
 	golden(t, "buildkitd.service", u)
 
-	if strings.Contains(u, "[Install]") {
-		t.Error("the daemon must not be enabled: a warm-pool boot would start it")
-	}
-
-	for _, want := range []string{"MemoryHigh=85%", "MemoryMax=92%", "CPUWeight=50", "User=buildkit", "--net=host", "Requires=buildkit-imds-guard.service"} {
+	for _, want := range []string{
+		"MemoryHigh=85%", "MemoryMax=92%", "CPUWeight=50", "User=buildkit", "--net=host",
+		"WantedBy=multi-user.target", "Requires=buildkit-imds-guard.service buildkit-cert.service", "ExecStartPre=+/usr/bin/chown",
+	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %s", want)
 		}
@@ -83,21 +82,17 @@ func TestGuardDropsMetadataForEveryoneButRoot(t *testing.T) {
 	}
 }
 
-func TestModuleStartsOnlyInServiceAndRenders(t *testing.T) {
+func TestModuleHasNoLifecycleAndRenders(t *testing.T) {
 	c, err := module.Collect(buildkit.New(config()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(c.InService) != 1 || c.InService[0].Order != buildkit.StartOrder || !strings.Contains(c.InService[0].Script, "systemctl start buildkitd.service") {
-		t.Errorf("in-service %+v", c.InService)
+	if len(c.InService)+len(c.ReadyChecks) != 0 {
+		t.Errorf("a single-instance daemon completes no launch hook: %v %v", c.InService, c.ReadyChecks)
 	}
 
-	if len(c.ReadyChecks) != 1 || c.ReadyChecks[0].TimeoutSeconds != 600 || !strings.Contains(c.ReadyChecks[0].Script, "debug workers") {
-		t.Errorf("ready %+v", c.ReadyChecks)
-	}
-
-	p, err := bootstrap.New(bootstrap.Options{Lifecycle: &bootstrap.Lifecycle{ASGName: "b", HookName: "b-launch"}})
+	p, err := bootstrap.New(bootstrap.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,15 +107,15 @@ func TestModuleStartsOnlyInServiceAndRenders(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"buildkit-v0.33.0.linux-arm64.tar.gz", "rootlesskit-aarch64.tar.gz", "mkfs.xfs -q -L bkcache", "user.max_user_namespaces = 63359",
-		"systemctl enable --now 'buildkit-imds-guard.service'"} {
+		"buildkit-v0.33.0.linux-arm64.tar.gz", "rootlesskit-aarch64.tar.gz", "user.max_user_namespaces = 63359",
+		"systemctl enable --now 'buildkit-imds-guard.service'", "buildkitd.service"} {
 		if !strings.Contains(r.CloudConfig, want) {
 			t.Errorf("user-data lacks %s", want)
 		}
 	}
 
-	if strings.Contains(r.CloudConfig, "enable 'buildkitd.service'") {
-		t.Error("buildkitd is enabled")
+	if strings.Contains(r.CloudConfig, "mkfs.xfs") || strings.Contains(config().UnitText(), "RequiresMountsFor") {
+		t.Error("the data volume module owns the mount, not the daemon")
 	}
 }
 
@@ -132,7 +127,6 @@ func TestRefusals(t *testing.T) {
 		"tls":         func(c *buildkit.Config) { c.TLS.Key = "key.pem" },
 		"debug":       func(c *buildkit.Config) { c.DebugAddress = "0.0.0.0:6060" },
 		"memory":      func(c *buildkit.Config) { c.MemoryHighPercent, c.MemoryMaxPercent = 95, 90 },
-		"device":      func(c *buildkit.Config) { c.CacheDevice = "/dev/nvme1n1" },
 	} {
 		c := config()
 		mut(&c)
@@ -155,43 +149,10 @@ func TestArch(t *testing.T) {
 	}
 }
 
-// mkfs.xfs refuses a label of more than 12 characters, and the boot script
-// then never completes the launch hook.
+// mkfs.xfs refuses a label of more than 12 characters, and the data volume
+// module then never mounts the cache.
 func TestCacheLabelFitsXFS(t *testing.T) {
 	if n := len(buildkit.CacheLabel); n > 12 {
 		t.Errorf("CacheLabel %q is %d characters; xfs allows 12", buildkit.CacheLabel, n)
-	}
-}
-
-func TestOnDemandHasNoLifecycle(t *testing.T) {
-	c := config()
-	c.OnDemand = true
-	c.CacheDevice = ""
-	c.BootUnits = []string{"buildkit-cert.service"}
-
-	got, err := buildkit.New(c).Contribute()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(got.InService)+len(got.ReadyChecks) != 0 {
-		t.Errorf("an on-demand daemon completes no launch hook: %v %v", got.InService, got.ReadyChecks)
-	}
-
-	unit := c.UnitText()
-	for _, want := range []string{"WantedBy=multi-user.target", "Requires=buildkit-imds-guard.service buildkit-cert.service", "ExecStartPre=+/usr/bin/chown"} {
-		if !strings.Contains(unit, want) {
-			t.Errorf("unit lacks %q:\n%s", want, unit)
-		}
-	}
-
-	if strings.Contains(unit, "RequiresMountsFor") {
-		t.Error("the data volume module orders the mount, not RequiresMountsFor")
-	}
-
-	// The group mode is untouched.
-	g := config()
-	if strings.Contains(g.UnitText(), "[Install]") {
-		t.Error("the group's unit gained an [Install] section")
 	}
 }
