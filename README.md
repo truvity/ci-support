@@ -105,6 +105,15 @@ Who uses this, and through which surface (2026-10-25):
 | A second, non-AWS estate | the `ci-builders` chart |
 | The builders on EC2, in the consumer's own deploy program | `pkg/buildkit/ec2` |
 
+## Runner identity (Go, Pulumi)
+
+`pkg/runneridentity` is the AWS side of the runner pods: the Pod Identity
+roles for the runner pools, the module proxy and cache-redirect, built with
+[truvity/k8s](https://github.com/truvity/k8s)'s `pkg/aws/podidentity`. Every
+name is an input; nothing grants cluster access or stable publishing. It
+moved here from truvity/ci-plane (`deploy/pulumi/runneridentity`) with the
+same API; see the package documentation.
+
 ## Neighbours
 
 - **[truvity/ci-plane](https://github.com/truvity/ci-plane)**: where this
