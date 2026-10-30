@@ -3,7 +3,7 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## Unreleased
+## v1.1.3
 
 - Fixed: the wake proxy no longer stops a builder seconds after it is created, which left the builder permanently unable to serve. The proxy is now truvity/asg v0.9.1 (`ec2.WakeProxyVersion` and `WakeProxySHA256` were v0.9.0; `github.com/truvity/asg` moves to v0.9.1). v0.9.0 counted an untagged builder's idle time from the proxy's own start, so a builder replaced by an apply (a new image, a new launch template version) was stopped at the first idle check, in the middle of its first boot; cloud-init's once-per-instance steps that were cut off (the package install) never re-ran, the IMDS guard unit then failed on every wake, and buildkitd never started. v0.9.1 counts idle time from the instance's launch as well. A builder replaced while an older proxy ran keeps the broken first boot: apply the new proxy first, then replace the builder. A new proxy release is a new launch template version, so the proxy instance is refreshed on the next apply.
 
