@@ -352,7 +352,7 @@ func TestProxyUserDataGolden(t *testing.T) {
 	ud := p.Rendered.CloudConfig
 
 	for _, want := range []string{
-		"releases/download/v0.9.0/wake-proxy_0.9.0_linux_arm64", testSHA, `"listenPort": 1235`, `"listenPort": 1236`, `"targetPort": 1234`,
+		"releases/download/v0.9.1/wake-proxy_0.9.1_linux_arm64", testSHA, `"listenPort": 1235`, `"listenPort": 1236`, `"targetPort": 1234`,
 		`"tagValue": "devel-buildkit-arm64"`, `"tagValue": "devel-buildkit-amd64"`, `"wakeTimeout": "3m0s"`, `"idleTimeout": "20m0s"`,
 	} {
 		if !strings.Contains(strings.ReplaceAll(ud, "<sha256>", testSHA), want) {
