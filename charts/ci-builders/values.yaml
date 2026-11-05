@@ -552,7 +552,8 @@ bazelRemote:
     # Its own ServiceAccount's Role may get and patch the one Deployment
     # bazel-remote. Patch on a Deployment is as strong as creating a pod in
     # the release namespace: the pod template can be rewritten to mount any
-    # Secret there or run as bazel-remote's ServiceAccount. So that is the
+    # Secret there or run as any ServiceAccount there, bazel-remote's
+    # included. So that is the
     # reach of `image`: pull it through your own pull-through cache or
     # mirror (`registry`) and pin it by `digest` (which wins over `tag`;
     # move both together).

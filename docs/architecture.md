@@ -694,7 +694,8 @@ by SNI.
   on a Deployment is still as strong as creating a pod in the release
   namespace: the holder can rewrite the pod template, so the pod can mount
   any Secret there (the client certificates, `bazel-remote-tls`) and run as
-  bazel-remote's ServiceAccount (its S3 role, with `s3.enabled`). The token
+  any ServiceAccount there, bazel-remote's included (its S3 role, with
+  `s3.enabled`). The token
   is mounted only in the CronJob's pod, so that reach is the reach of the
   `kubectl` image it runs. The image is `registry.k8s.io/kubectl` by
   default; an estate pulls it through its own pull-through cache or mirror
