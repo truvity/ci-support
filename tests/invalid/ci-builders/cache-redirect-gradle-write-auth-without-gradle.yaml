@@ -1,0 +1,16 @@
+# refuses: cacheRedirect.gradle.writeAuth.existingSecret is set but cacheRedirect.gradle is disabled
+# A writers' Secret is named for the Gradle build cache, which is off by default.
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+cacheRedirect:
+  enabled: true
+  s3:
+    bucket: example-bucket
+    region: eu-example-1
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+  gradle:
+    enabled: false
+    writeAuth:
+      existingSecret: ci-cache-writers

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -37,11 +41,20 @@ const gradleEntryType = "application/vnd.gradle.build-cache-entry.1"
 //     204 and changes nothing, so an entry already in the store cannot be
 //     replaced by another job's.
 //
+// WHO MAY WRITE. Without -gradle-write-token-file, whoever can reach the
+// service. With it, a PUT must carry one of the tokens that file holds, as
+// the password of HTTP Basic credentials (what Gradle's HttpBuildCache sends;
+// the user name is not checked) or as a Bearer token, and is answered 401
+// otherwise, before the store is asked anything. Reads (GET, HEAD) never need
+// a credential, so a client without one still reads what the writers stored.
+//
 // A hit is a redirect, so the bytes of an entry never pass through the pod.
 type gradleFrontend struct {
 	cache    *Cache
 	prefix   string
 	maxEntry int64
+	// writeTokens, when set, is the file of the tokens a PUT must carry.
+	writeTokens *tokenFile
 }
 
 func (g *gradleFrontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +79,9 @@ func (g *gradleFrontend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodHead:
 		g.get(w, r, g.prefix+key)
 	case http.MethodPut:
+		if !g.mayWrite(w, r) {
+			return
+		}
 		g.put(w, r, g.prefix+key)
 	default:
 		w.Header().Set("Allow", "GET, HEAD, PUT")
@@ -129,6 +145,89 @@ func (g *gradleFrontend) put(w http.ResponseWriter, r *http.Request, key string)
 	}
 	g.cache.metrics.Request(frontendGradle, resultStored)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// mayWrite reports whether r may write, and answers it when it may not. With
+// no token file every client may.
+func (g *gradleFrontend) mayWrite(w http.ResponseWriter, r *http.Request) bool {
+	if g.writeTokens == nil {
+		return true
+	}
+	ok, err := g.writeTokens.admits(presentedToken(r))
+	if err != nil {
+		// A file that cannot be read refuses every write: failing open would
+		// make the cache writable by anyone the moment the mount breaks.
+		g.cache.log.Error("gradle write tokens", "err", err)
+		g.cache.metrics.Request(frontendGradle, resultUnauthorized)
+		http.Error(w, "write credentials unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	if !ok {
+		g.cache.metrics.Request(frontendGradle, resultUnauthorized)
+		w.Header().Set("WWW-Authenticate", `Basic realm="gradle build cache", charset="UTF-8"`)
+		http.Error(w, "a write needs credentials", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// presentedToken is the credential of r: the password of Basic credentials,
+// or a Bearer token; empty when it carries neither.
+func presentedToken(r *http.Request) string {
+	if _, pass, ok := r.BasicAuth(); ok {
+		return pass
+	}
+	scheme, tok, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if ok && strings.EqualFold(scheme, "Bearer") {
+		return strings.TrimSpace(tok)
+	}
+	return ""
+}
+
+// tokenFile is a file of accepted tokens, one per line (blank lines and lines
+// starting with # are skipped), so that a rotation can accept the old token
+// and the new one at once. It is read again on every check: writes are few,
+// and a Kubernetes Secret mounted as a volume changes the file in place.
+type tokenFile struct {
+	path string
+}
+
+func (f *tokenFile) tokens() ([][sha256.Size]byte, error) {
+	b, err := os.ReadFile(f.path)
+	if err != nil {
+		return nil, err
+	}
+	var out [][sha256.Size]byte
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, sha256.Sum256([]byte(line)))
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s holds no token", f.path)
+	}
+	return out, nil
+}
+
+// admits reports whether presented is one of the file's tokens. It compares
+// digests in constant time, and every token, so neither the length nor the
+// position of a match shows in the time it takes.
+func (f *tokenFile) admits(presented string) (bool, error) {
+	want, err := f.tokens()
+	if err != nil {
+		return false, err
+	}
+	if presented == "" {
+		return false, nil
+	}
+	got := sha256.Sum256([]byte(presented))
+	match := 0
+	for _, t := range want {
+		match |= subtle.ConstantTimeCompare(got[:], t[:])
+	}
+	return match == 1, nil
 }
 
 // validGradleKey admits the keys Gradle sends: the hexadecimal form of a hash

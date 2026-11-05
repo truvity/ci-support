@@ -1,0 +1,22 @@
+# Who may write the build caches (v1.2.0): the Gradle build cache of
+# cache-redirect and bazel-remote each take their writers' credential from a
+# Secret of the release namespace; reads need none.
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+nodeClasses:
+  cache-plane: {}
+cacheRedirect:
+  enabled: true
+  s3:
+    bucket: example-bucket
+    region: eu-example-1
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+  gradle:
+    writeAuth:
+      existingSecret: ci-cache-writers
+      key: gradle-tokens
+bazelRemote:
+  writeAuth:
+    existingSecret: ci-cache-writers

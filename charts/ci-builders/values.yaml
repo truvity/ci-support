@@ -326,8 +326,8 @@ cacheRedirect:
   # (presets/preview.yaml, presets/stable.yaml) turn it on, each tier in its
   # own deployment and bucket. A write is bounded
   # (hex keys only, a Content-Length, `maxEntryBytes`, committed only when the
-  # body arrived whole, the first write of a key wins) but not authenticated.
-  # A stable runner never reads what a preview job wrote because the tiers do
+  # body arrived whole, the first write of a key wins) but, unless `writeAuth`
+  # below is set, not authenticated. A stable runner never reads what a preview job wrote because the tiers do
   # not share a deployment or a bucket.
   gradle:
     enabled: false
@@ -335,6 +335,21 @@ cacheRedirect:
     # The largest entry a client may store; a larger PUT is a 413, which Gradle
     # reads as "too large to cache" and carries on.
     maxEntryBytes: 536870912
+    # WHO MAY WRITE (v1.2.0). Empty `existingSecret`: whoever can reach the
+    # service, as before. Set: a PUT must carry one of the tokens in the
+    # Secret's `key` (one per line, so a rotation can hold the old token and the
+    # new one at once), as the password of Basic credentials (Gradle's
+    # HttpBuildCache `credentials { username = "<any>"; password = "<token>" }`)
+    # or as a Bearer token; anything else is a 401 and never reaches the bucket.
+    # Reads (GET, HEAD, the probe) need no credential. The Secret is in the
+    # release namespace and is mounted, not copied into the environment; the
+    # file is read on every write, so a rotation needs no restart. Gradle turns
+    # the remote cache off for the rest of a build after a refused store, so
+    # give the writers their credential BEFORE setting this.
+    # docs/architecture.md, "Who may write the build caches".
+    writeAuth:
+      existingSecret: ""
+      key: tokens
   # The npm registry (v7.8.0), read-only: what npm, yarn (berry) and pnpm are
   # given as their registry. An immutable tarball is stored under `prefix` and is
   # a redirect to the bucket on a hit. A packument (the metadata of a package) is
@@ -446,6 +461,20 @@ bazelRemote:
     # (IRSA); Pod Identity needs none.
     create: false
     annotations: {}
+  # WHO MAY WRITE (v1.2.0). Empty `existingSecret`: whoever can reach the
+  # service reads AND writes, as before. Set: bazel-remote runs with
+  # `--htpasswd_file` (the Secret's `key`, an htpasswd file; bcrypt entries,
+  # `htpasswd -B`) and `--allow_unauthenticated_reads`, so a write
+  # (ByteStream Write, CAS BatchUpdateBlobs, AC UpdateActionResult, an HTTP
+  # PUT) needs Basic credentials of the file and a read needs none. A gRPC
+  # client sends them from the address, grpcs://<user>:<password>@<host>, or as
+  # an `authorization: Basic ...` header; a gateway in front must pass that
+  # header through. A client that sends none still reads; its writes fail, so
+  # give the writers their credential BEFORE setting this.
+  # docs/architecture.md, "Who may write the build caches".
+  writeAuth:
+    existingSecret: ""
+    key: htpasswd
   s3:
     # Off by default. Enabling needs the bucket, its region, and a
     # matching Pod Identity association (namespace +

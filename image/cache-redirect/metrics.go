@@ -23,11 +23,12 @@ const (
 	resultStored        = "stored"         // a client's write was committed to the store (the Gradle build cache)
 	resultRejected      = "rejected"       // a client's write was refused: no length, or too large (the Gradle build cache)
 	resultStale         = "stale"          // upstream failed and the last copy was served instead (npm packuments)
+	resultUnauthorized  = "unauthorized"   // a client's write carried no accepted credential (the Gradle build cache, -gradle-write-token-file)
 )
 
 var allResults = []string{
 	resultHit, resultRedirect, resultMiss, resultNotFound, resultUpstreamError, resultStoreError,
-	resultVerifyFailed, resultNoIndex, resultStored, resultRejected, resultStale,
+	resultVerifyFailed, resultNoIndex, resultStored, resultRejected, resultStale, resultUnauthorized,
 }
 
 // upstreamBuckets are the histogram bounds, in seconds, of the time to

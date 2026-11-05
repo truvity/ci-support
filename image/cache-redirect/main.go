@@ -83,9 +83,10 @@ type settings struct {
 	MavenPrefix string
 	MavenRepos  *mavenRepos
 
-	Gradle         bool
-	GradlePrefix   string
-	GradleMaxEntry int64
+	Gradle          bool
+	GradlePrefix    string
+	GradleMaxEntry  int64
+	GradleWriteAuth string
 
 	Npm       bool
 	NpmPrefix string
@@ -137,9 +138,12 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (*set
 	c.MavenRepos = newMavenRepos()
 	fs.Var(c.MavenRepos, "maven-repo", "a Maven upstream as name=URL (repeatable, or comma-separated); naming any replaces the defaults: "+c.MavenRepos.String())
 
-	fs.BoolVar(&c.Gradle, "gradle", false, "serve the Gradle remote build cache under /gradle/cache/ -- WRITABLE by every client that can reach the service")
+	fs.BoolVar(&c.Gradle, "gradle", false, "serve the Gradle remote build cache under /gradle/cache/ -- WRITABLE by every client that can reach the service, unless -gradle-write-token-file is set")
 	fs.StringVar(&c.GradlePrefix, "gradle-prefix", "gradle/", "store key prefix of the Gradle build cache")
 	fs.Int64Var(&c.GradleMaxEntry, "gradle-max-entry-bytes", 512<<20, "the largest build cache entry a client may store (413 above it)")
+	fs.StringVar(&c.GradleWriteAuth, "gradle-write-token-file", "",
+		"a file of tokens, one per line: a PUT to the Gradle build cache must carry one (as the password of Basic credentials, or a Bearer token) "+
+			"or is answered 401; reads need none. Empty: every client that can reach the service may write")
 
 	fs.BoolVar(&c.Npm, "npm", false, "serve the npm registry under /npm (read-only)")
 	fs.StringVar(&c.NpmPrefix, "npm-prefix", "npm/", "store key prefix of the npm front-end")
@@ -258,6 +262,14 @@ func (c *settings) validate() error {
 	if c.Gradle && c.GradleMaxEntry < 1 {
 		errs = append(errs, errors.New("-gradle-max-entry-bytes must be positive"))
 	}
+	if c.GradleWriteAuth != "" {
+		if !c.Gradle {
+			errs = append(errs, errors.New("-gradle-write-token-file is set but the Gradle front-end is off"))
+		} else if _, err := (&tokenFile{path: c.GradleWriteAuth}).tokens(); err != nil {
+			// Refuse to start rather than serve a cache nobody can write to.
+			errs = append(errs, fmt.Errorf("-gradle-write-token-file: %w", err))
+		}
+	}
 	if c.Npm {
 		if _, err := parseUpstream(c.NpmReg); err != nil {
 			errs = append(errs, fmt.Errorf("-npm-registry: %w", err))
@@ -318,7 +330,7 @@ func realMain(args []string) int {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	log.Info("serving", "listen", cfg.Listen, "bucket", cfg.S3.Bucket, "nix", cfg.Nix, "goproxy", cfg.Go,
-		"maven", cfg.Maven, "maven_repos", mavenRepoNamesOf(cfg), "gradle", cfg.Gradle, "npm", cfg.Npm, "hosts", hostsServed(cfg.Hosts.routes()))
+		"maven", cfg.Maven, "maven_repos", mavenRepoNamesOf(cfg), "gradle", cfg.Gradle, "gradle_write_auth", cfg.GradleWriteAuth != "", "npm", cfg.Npm, "hosts", hostsServed(cfg.Hosts.routes()))
 
 	select {
 	case err := <-errc:
@@ -395,7 +407,11 @@ func newHandler(bg context.Context, cfg *settings, store Store, client *http.Cli
 		mux.Handle("/maven/", &mavenFrontend{cache: c, prefix: cfg.MavenPrefix, repos: repos})
 	}
 	if cfg.Gradle {
-		mux.Handle("/gradle/", &gradleFrontend{cache: c, prefix: cfg.GradlePrefix, maxEntry: cfg.GradleMaxEntry})
+		g := &gradleFrontend{cache: c, prefix: cfg.GradlePrefix, maxEntry: cfg.GradleMaxEntry}
+		if cfg.GradleWriteAuth != "" {
+			g.writeTokens = &tokenFile{path: cfg.GradleWriteAuth}
+		}
+		mux.Handle("/gradle/", g)
 	}
 	if cfg.Npm {
 		up, _ := parseUpstream(cfg.NpmReg) // validated

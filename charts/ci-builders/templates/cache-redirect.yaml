@@ -13,6 +13,7 @@
 {{- $_ := set $hostsSeen (lower $host) $kind }}
 {{- end }}
 {{- end }}
+{{- if and $c.gradle.writeAuth.existingSecret (not $c.gradle.enabled) }}{{ fail "cacheRedirect.gradle.writeAuth.existingSecret is set but cacheRedirect.gradle is disabled" }}{{ end }}
 {{- range $name, $url := $c.maven.repositories }}
 {{- if not (regexMatch "^[A-Za-z0-9._-]+$" $name) }}{{ fail (printf "cacheRedirect.maven.repositories: %q is not a repository name (letters, digits, '.', '_' and '-')" $name) }}{{ end }}
 {{- if not (regexMatch "^https?://" (toString $url)) }}{{ fail (printf "cacheRedirect.maven.repositories.%s: %q is not an http(s) URL" $name (toString $url)) }}{{ end }}
@@ -159,6 +160,10 @@ spec:
             {{- if $c.gradle.enabled }}
             - {{ printf "-gradle-prefix=%s" $c.gradle.prefix | quote }}
             - {{ printf "-gradle-max-entry-bytes=%d" (int64 $c.gradle.maxEntryBytes) | quote }}
+            {{- if $c.gradle.writeAuth.existingSecret }}
+            # A PUT must carry a token of this file; reads need none.
+            - -gradle-write-token-file=/etc/cache-redirect/gradle-write/tokens
+            {{- end }}
             {{- end }}
             - {{ printf "-npm=%t" $c.npm.enabled | quote }}
             {{- if $c.npm.enabled }}
@@ -178,6 +183,12 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ . }}
+          {{- end }}
+          {{- if $c.gradle.writeAuth.existingSecret }}
+          volumeMounts:
+            - name: gradle-write-tokens
+              mountPath: /etc/cache-redirect/gradle-write
+              readOnly: true
           {{- end }}
           ports:
             - name: http
@@ -212,6 +223,17 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+      {{- with $c.gradle.writeAuth.existingSecret }}
+      volumes:
+        # Mounted, never put in the environment: the file is read on every
+        # write, so a rotation of the Secret reaches the pod without a restart.
+        - name: gradle-write-tokens
+          secret:
+            secretName: {{ . }}
+            items:
+              - key: {{ required "cacheRedirect.gradle.writeAuth.key is required with writeAuth.existingSecret" $c.gradle.writeAuth.key }}
+                path: tokens
+      {{- end }}
 {{- if and $c.podDisruptionBudget.enabled (gt (int $c.replicas) 1) }}
 ---
 # A voluntary disruption (node drain, consolidation) may take down all
