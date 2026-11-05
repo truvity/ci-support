@@ -137,6 +137,6 @@ builders' server certificates) is [mtls.md](mtls.md).
 Runners in the cluster reach the caches by cluster DNS (the builders are
 outside it, behind mutual TLS, [mtls.md](mtls.md)):
 `cache-redirect.<namespace>.svc/nix` (nix substituter), `/goproxy` (GOPROXY) and `/maven/<repo>` (Gradle and Maven repositories),
-`bazel-remote.<namespace>.svc:9092` (moon remote cache; the port declares `appProtocol: kubernetes.io/h2c`, so a gateway can publish it over an HTTPRoute),
+`bazel-remote.<namespace>.svc:9092` (moon remote cache; the port declares `appProtocol: kubernetes.io/h2c`, so a gateway can publish it over an HTTPRoute; with `bazelRemote.tls` it is `grpcs://` instead, a gateway passes it through by SNI, and a write can need a client certificate: [architecture.md](architecture.md#who-may-write-the-build-caches)),
 `npm-cache.<namespace>.svc` (yarn/npm/pnpm `npmRegistryServer`, public
 packages, behind a health-probe fallback to registry.npmjs.org).
