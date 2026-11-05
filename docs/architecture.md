@@ -612,14 +612,53 @@ token as the password of Basic credentials (any user name; Gradle's
   (port 8080, `allowInsecureProtocol`) the token is readable by anything on
   the path.
 
-**bazel-remote** has no such switch in this chart. Its own authentication
-(`--htpasswd_file` with `--allow_unauthenticated_reads`) checks Basic
-credentials, and moon's remote cache client sends only a Bearer token
-(`remote.auth.token`) or mutual TLS, so turning it on would refuse every
-moon write. Until that changes, whatever is in front of bazel-remote must
-decide who writes: the write methods (ByteStream `Write`, CAS
-`BatchUpdateBlobs`, AC `UpdateActionResult`) are paths a gateway can route
-apart from the reads and authenticate there.
+**bazel-remote** decides by client certificate (`bazelRemote.tls`, off by
+default). Its Basic authentication (`--htpasswd_file`) is not offered: moon's
+remote cache client sends only a Bearer token (`remote.auth.token`) or mutual
+TLS, so it would refuse every moon write. Mutual TLS needs the TLS to end at
+bazel-remote, not at a gateway in front of it, so a gateway passes it through
+by SNI.
+
+| Value | What bazel-remote runs with | Who reads, who writes |
+|---|---|---|
+| `tls.enabled`, no `clientCA` | `--tls_cert_file`, `--tls_key_file` (cert-manager's `bazel-remote-tls`, for `serverCertificate.dnsNames`), `--min_tls_version` | everyone who reaches it, over TLS |
+| `tls.clientCA.configMapName` too | `--tls_ca_file` (the ConfigMap's `key`), `--allow_unauthenticated_reads` | reads: everyone; writes: a client certificate that chains to the CA |
+
+- **TLS covers both ports**: bazel-remote has no way to keep one of them
+  plain. The gRPC port stops declaring `appProtocol: kubernetes.io/h2c`; a
+  gateway that terminated TLS and spoke h2c to the pod (an HTTPRoute) must
+  become a passthrough (a TLSRoute to port 9092 for the same name) in the
+  same change. In-cluster clients dial `grpcs://` too, with a name on the
+  certificate (add `bazel-remote.<namespace>.svc` to `dnsNames` for them).
+- **A read needs nothing.** The read methods (`GetCapabilities`,
+  `GetActionResult`, `FindMissingBlobs`, `BatchReadBlobs`, `GetTree`,
+  ByteStream `Read`, HTTP `GET` and `HEAD`) and the gRPC health check are
+  served without a certificate. A write without one is refused
+  (`Unauthenticated`; HTTP 401) and stores nothing; moon logs a warning, the
+  task still passes and its later reads go on.
+- **A wrong certificate refuses everything.** The handshake verifies a
+  certificate the client presents, so a client with a certificate of another
+  CA, or with mutual TLS configured and its files missing, does not connect
+  at all: moon then turns its remote cache off for the run, reads included.
+  Give writers a certificate of the CA in `clientCA`, and configure mutual TLS
+  on a client only where its files are.
+- **Order, so no reader is cut off.** (1) `tls.enabled` with the gateway's
+  passthrough, no `clientCA`: everyone still reads and writes. (2) The writers
+  get their certificate and configure mutual TLS (moon:
+  `MOON_REMOTE_MTLS_CA_CERT`, `_CLIENT_CERT`, `_CLIENT_KEY`, paths to PEM
+  files); a server that requests no certificate accepts them as before.
+  (3) `tls.clientCA.configMapName`: writes without a certificate stop.
+  Measured with bazel-remote v2.6.2 and moon 2.6.2: each step left the readers
+  reading.
+- **Renewal.** bazel-remote loads its certificate and the client CA once, at
+  start. `tls.restart` (on with `tls.enabled`) restarts the Deployment on a
+  schedule, weekly by default, inside the certificate's `renewBefore` (30
+  days by default); each restart is a few seconds without the cache, which a
+  moon or Bazel client rides out on its local cache. Turn it off only where
+  something else restarts the pod well inside `renewBefore`.
+- **What it does not decide**: who holds a client certificate, as for the
+  Gradle token. The CA's issuance policy does; a certificate every job of a
+  tier is given is one any job of that tier can copy.
 
 ### Metrics and operations
 

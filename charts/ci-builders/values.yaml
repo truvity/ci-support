@@ -485,6 +485,82 @@ bazelRemote:
     bucket: ""
     region: ""
     prefix: ""        # key prefix within the bucket
+  # TLS ON BAZEL-REMOTE ITSELF, and with `clientCA` the writers' mutual TLS
+  # (v1.3.0). OFF by default: the ports speak plain HTTP and h2c, as before.
+  # docs/architecture.md, "Who may write the build caches".
+  #
+  # `enabled`: bazel-remote serves TLS on BOTH ports (gRPC 9092 and HTTP
+  # 8080; it has no way to keep one plain) with a certificate cert-manager
+  # issues for `serverCertificate.dnsNames`. A gateway in front then passes
+  # the TLS through by SNI (a TLSRoute) instead of terminating it: an
+  # HTTPRoute that speaks h2c to the pod stops working the moment this is
+  # set, so the route and this switch move together. The gRPC port stops
+  # declaring appProtocol kubernetes.io/h2c.
+  #
+  # `clientCA.configMapName` set: bazel-remote also verifies client
+  # certificates against the CA in that ConfigMap (--tls_ca_file) and, with
+  # `allowUnauthenticatedReads` (default), lets a client WITHOUT a
+  # certificate read: a write (ByteStream Write, CAS BatchUpdateBlobs, AC
+  # UpdateActionResult, an HTTP PUT) needs a certificate that chains to the
+  # CA, and a read needs none. A client that presents a certificate that
+  # does NOT chain to it fails the handshake, reads included, so give the
+  # writers a certificate of THIS CA, not another one.
+  #
+  # bazel-remote reads its certificate and the client CA once, at start. A
+  # renewed certificate reaches it only through a restart: `restart` below.
+  tls:
+    enabled: false
+    serverCertificate:
+      # Required with `enabled`: the issuer of the server certificate, one
+      # the clients already trust.
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      # Required with `enabled`: the names clients dial (the SNI a
+      # passthrough gateway routes on). The first is also the common name.
+      dnsNames: []
+      duration: 2160h
+      # Longer than the restart interval below, so a renewed certificate is
+      # loaded before the old one expires.
+      renewBefore: 720h
+      privateKey:
+        algorithm: ECDSA
+        size: 384
+    # --min_tls_version: 1.0, 1.1, 1.2 or 1.3.
+    minVersion: "1.2"
+    clientCA:
+      # Empty: server TLS only, every client that can reach the service
+      # reads AND writes (the step between "behind a terminating gateway"
+      # and "writers need a certificate"). Set: a ConfigMap of the release
+      # namespace holding the client CA certificate (`key`), for example
+      # the one buildkitd.mtls.clientCA.bundle publishes.
+      configMapName: ""
+      key: ca.crt
+      # true: reads need no certificate (--allow_unauthenticated_reads).
+      # false: every request but the gRPC health check needs one.
+      allowUnauthenticatedReads: true
+    # A CronJob that restarts bazel-remote on `schedule` (kubectl rollout
+    # restart, with a Role that may get and patch this one Deployment and
+    # nothing else), so a certificate cert-manager renewed `renewBefore`
+    # ahead of expiry is loaded in time. The restart is a few seconds
+    # without the cache (one replica, Recreate); a moon or Bazel client goes
+    # on with its local cache meanwhile. Turn it off only where something
+    # else restarts the pod well inside `renewBefore`.
+    restart:
+      enabled: true
+      schedule: "17 3 * * 0"
+      image:
+        registry: registry.k8s.io
+        repository: kubectl
+        # renovate: datasource=docker depName=registry.k8s.io/kubectl
+        tag: v1.35.9
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
   resources:
     requests:
       cpu: 50m

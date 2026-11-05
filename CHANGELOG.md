@@ -3,6 +3,15 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+### Added
+
+- **bazel-remote serves TLS itself, and can require a client certificate for a write** (`bazelRemote.tls`; docs/architecture.md, "Who may write the build caches"). Off by default, so a release that does not set it renders what v1.2.0 did (every golden is byte-identical).
+  - `bazelRemote.tls.enabled`: a cert-manager `Certificate` `bazel-remote` (Secret `bazel-remote-tls`) from `serverCertificate.issuerRef` for `serverCertificate.dnsNames` (both required), and bazel-remote runs with `--tls_cert_file`, `--tls_key_file` and `--min_tls_version` (`minVersion`, default `1.2`). TLS covers both ports; the HTTP port is named `https`, and the gRPC port no longer declares `appProtocol: kubernetes.io/h2c`, so a gateway in front passes the TLS through by SNI (a TLSRoute to port 9092) instead of terminating it. An HTTPRoute that spoke h2c to the port stops working when this is set: move the route with it.
+  - `bazelRemote.tls.clientCA.configMapName` / `.key` (default `ca.crt`): bazel-remote also verifies client certificates against that CA (`--tls_ca_file`) and, with `allowUnauthenticatedReads` (default true, `--allow_unauthenticated_reads`), a client without a certificate still reads while a write (ByteStream `Write`, CAS `BatchUpdateBlobs`, AC `UpdateActionResult`, an HTTP `PUT`) without one is refused (`Unauthenticated`, HTTP 401). A client that presents a certificate of ANOTHER CA fails the handshake, reads included. Setting it without `tls.enabled` is a render error.
+  - `bazelRemote.tls.restart` (on with `tls.enabled`): bazel-remote loads its certificate once, at start, so a CronJob `bazel-remote-restart` (default weekly, `17 3 * * 0`) runs `kubectl rollout restart deployment/bazel-remote` (image `registry.k8s.io/kubectl`, a Role that may `get` and `patch` that one Deployment) to load a renewed certificate inside `renewBefore` (default 720h). Each restart is a few seconds without the cache.
+
 ## v1.2.0
 
 ### Added

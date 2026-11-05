@@ -1,0 +1,8 @@
+# refuses: bazelRemote.tls.clientCA.configMapName needs bazelRemote.tls.enabled
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+bazelRemote:
+  tls:
+    clientCA:
+      configMapName: buildkitd-client-ca
