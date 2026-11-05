@@ -19,4 +19,6 @@ bazelRemote:
     restart:
       schedule: "5 4 * * 3"
       image:
-        registry: registry.example
+        registry: registry.example/registry.k8s.io
+        # Digest-pinned: rendered as repository@digest, the tag unused.
+        digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
