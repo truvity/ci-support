@@ -571,15 +571,14 @@ write either can put an output in front of every build of the tier, and the
 first write of a key wins. Reaching the service is a weak boundary for that:
 a gateway in front of the caches is reached by whatever the network admits,
 and a network range rarely separates the runners from everything else in the
-same subnets. Both caches can therefore require a credential for a WRITE and
-none for a read (v1.2.0), each off by default:
+same subnets.
 
-| Cache | Value | What the pod runs with | What a writer sends |
-|---|---|---|---|
-| Gradle (cache-redirect) | `cacheRedirect.gradle.writeAuth.existingSecret`, `.key` (default `tokens`) | `-gradle-write-token-file`: the key, mounted; one token per line | the token as the password of Basic credentials (any user name), or as a Bearer token |
-| bazel-remote | `bazelRemote.writeAuth.existingSecret`, `.key` (default `htpasswd`) | `--htpasswd_file` (the key, mounted) and `--allow_unauthenticated_reads` | Basic credentials of the file: `grpcs://<user>:<password>@<host>`, or an `authorization: Basic ...` header |
-
-What follows for each:
+**The Gradle build cache** can require a credential for a WRITE and none for
+a read (v1.2.0, off by default): `cacheRedirect.gradle.writeAuth.existingSecret`
+and `.key` (default `tokens`) mount a Secret of the release namespace and
+pass it as `-gradle-write-token-file`, one token per line. A writer sends the
+token as the password of Basic credentials (any user name; Gradle's
+`HttpBuildCache` `credentials { }`), or as a Bearer token.
 
 - **A read needs nothing**, so every reader keeps working while the writers
   are moved over, and a reader without a credential reads what the writers
@@ -602,6 +601,15 @@ What follows for each:
   job of a tier is given is a credential any job of that tier can print, so
   this separates the tier's jobs from everything else, not one job from
   another. A token per job is the stronger form and is not here.
+
+**bazel-remote** has no such switch in this chart. Its own authentication
+(`--htpasswd_file` with `--allow_unauthenticated_reads`) checks Basic
+credentials, and moon's remote cache client sends only a Bearer token
+(`remote.auth.token`) or mutual TLS, so turning it on would refuse every
+moon write. Until that changes, whatever is in front of bazel-remote must
+decide who writes: the write methods (ByteStream `Write`, CAS
+`BatchUpdateBlobs`, AC `UpdateActionResult`) are paths a gateway can route
+apart from the reads and authenticate there.
 
 ### Metrics and operations
 

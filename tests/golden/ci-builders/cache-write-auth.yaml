@@ -258,10 +258,6 @@ spec:
             - --max_size=8
             - --port=8080
             - --grpc_port=9092
-            # Writes need Basic credentials of the htpasswd file; reads need none
-            # (bazelRemote.writeAuth).
-            - --htpasswd_file=/etc/bazel-remote/auth/htpasswd
-            - --allow_unauthenticated_reads
           ports:
             - name: http
               containerPort: 8080
@@ -270,9 +266,6 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            - name: write-auth
-              mountPath: /etc/bazel-remote/auth
-              readOnly: true
           resources:
             limits:
               memory: 1Gi
@@ -288,12 +281,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: bazel-remote-data
-        - name: write-auth
-          secret:
-            secretName: ci-cache-writers
-            items:
-              - key: htpasswd
-                path: htpasswd
 
 ---
 # Source: ci-builders/templates/cache-redirect.yaml
