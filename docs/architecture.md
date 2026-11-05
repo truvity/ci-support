@@ -586,21 +586,31 @@ token as the password of Basic credentials (any user name; Gradle's
 - **A refused write never reaches the bucket.** cache-redirect answers 401
   with a Basic challenge before it asks the store anything, and counts it as
   `result="unauthorized"`; a token file it cannot read refuses every write
-  (503) rather than admitting all of them, and at start-up a missing or empty
-  file is a configuration error.
+  (503, `write credentials unavailable`, logged as `gradle write tokens`)
+  rather than admitting all of them, and counts that as `unauthorized` too,
+  so the log tells a broken mount from a writer without its credential. At
+  start-up a missing or empty file is a configuration error.
 - **Rotation.** The token file is read on every write, so a Secret updated in
   place reaches the pods without a restart, and a file that holds the old
   token and the new one accepts both while the writers move.
 - **Order.** Gradle turns its remote cache off for the rest of a build after a
   store fails, so a writer without the credential loses its reads too, for
   that build. Give the writers the credential first, then set `writeAuth`.
-  Check, before that, that the client does not send its credential on the
-  redirect of a hit: the presigned URL carries its own signature, and a store
-  refuses a request that carries a second one.
+  A client that sent its credential on the redirect of a hit would be
+  refused by the store, because the presigned URL carries its own signature.
+  Gradle 8.14 does not: it sends the credential to cache-redirect and not to
+  the host it is redirected to (measured, a hit came back `FROM-CACHE`).
+  Check another client, or another Gradle major, the same way before giving
+  it the credential.
 - **What it does not decide**: who holds the credential. A credential every
   job of a tier is given is a credential any job of that tier can print, so
   this separates the tier's jobs from everything else, not one job from
-  another. A token per job is the stronger form and is not here.
+  another. A token per job is the stronger form and is not here. Nor does it
+  decide how the credential travels: writers should reach the cache over TLS
+  (a gateway, or an `https` host). With credentials set, Gradle sends them
+  preemptively as Basic on every request, reads included, so on plain HTTP
+  (port 8080, `allowInsecureProtocol`) the token is readable by anything on
+  the path.
 
 **bazel-remote** has no such switch in this chart. Its own authentication
 (`--htpasswd_file` with `--allow_unauthenticated_reads`) checks Basic
@@ -620,6 +630,8 @@ PodMonitor): `cache_redirect_requests_total{frontend,result}` with
 `verify_failed` (a NAR not matching its narinfo: served, not stored),
 `no_index` (a NAR with no narinfo record: served, not stored),
 `stored` and `rejected` (a client's write to the Gradle build cache),
+`unauthorized` (a write to the Gradle build cache without an accepted
+credential, or refused because the token file cannot be read),
 `stale` (an npm packument served from its stored copy because the registry failed);
 `cache_redirect_uploads_total{frontend,result="ok|failed"}`;
 `cache_redirect_upload_bytes_total{frontend}`;
