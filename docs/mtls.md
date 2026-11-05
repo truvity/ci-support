@@ -110,6 +110,16 @@ new parameter version up on its next boot, or in place when idle (see
 [buildkit-on-ec2.md](buildkit-on-ec2.md)). Nothing is deleted from the
 store when an object goes (`deletionPolicy: None`).
 
+## The same CA for bazel-remote's writers
+
+bazel-remote can require a client certificate for a write
+(`bazelRemote.tls.clientCA`, [architecture.md](architecture.md#who-may-write-the-build-caches)).
+Pointing it at the ConfigMap the client CA's `Bundle` publishes
+(`clientCA.configMapName`, default `buildkitd-client-ca`) makes the runners'
+BuildKit client certificate their bazel-remote write credential as well: no
+second certificate to issue and deliver. The cost is that the two are one
+decision: whoever may dial a builder may also write the task cache.
+
 ## What this does not do
 
 Per-job certificates (federated identity, a short-lived client certificate

@@ -1,0 +1,10 @@
+# refuses: bazelRemote.tls.serverCertificate.dnsNames is required
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+bazelRemote:
+  tls:
+    enabled: true
+    serverCertificate:
+      issuerRef:
+        name: example-private

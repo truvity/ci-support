@@ -1,0 +1,16 @@
+# bazel-remote serving TLS itself (bazelRemote.tls, v1.3.0), no client CA:
+# the step between a terminating gateway and writers that need a certificate.
+# A passthrough gateway routes the name to the gRPC port by SNI; every client
+# still reads and writes.
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+bazelRemote:
+  tls:
+    enabled: true
+    serverCertificate:
+      issuerRef:
+        name: example-private
+      dnsNames:
+        - bazel.cache.example.private
+    minVersion: "1.3"

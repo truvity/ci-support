@@ -1,0 +1,22 @@
+# bazel-remote's writers need a client certificate (bazelRemote.tls.clientCA,
+# v1.3.0): verified against the CA of a ConfigMap of the release namespace
+# (here the one the BuildKit client CA's Bundle publishes); reads need none.
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+bazelRemote:
+  tls:
+    enabled: true
+    serverCertificate:
+      issuerRef:
+        name: example-private
+      dnsNames:
+        - bazel.cache.example.private
+        - bazel-remote.example.svc
+    minVersion: "1.3"
+    clientCA:
+      configMapName: buildkitd-client-ca
+    restart:
+      schedule: "5 4 * * 3"
+      image:
+        registry: registry.example

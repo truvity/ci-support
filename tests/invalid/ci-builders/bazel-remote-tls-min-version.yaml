@@ -1,0 +1,12 @@
+# refuses: at '/bazelRemote/tls/minVersion': value must be one of
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+bazelRemote:
+  tls:
+    enabled: true
+    minVersion: "1.4"
+    serverCertificate:
+      issuerRef:
+        name: example-private
+      dnsNames: [bazel.cache.example.private]

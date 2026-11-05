@@ -611,6 +611,53 @@
             "create": {"type": "boolean"},
             "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
           }
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "TLS on bazel-remote itself (both ports), and with clientCA.configMapName the writers' mutual TLS: a write needs a client certificate that chains to the CA, a read none (allowUnauthenticatedReads). Off by default.",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "serverCertificate": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "issuerRef": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["ClusterIssuer", "Issuer"]},
+                    "group": {"type": "string"}
+                  }
+                },
+                "dnsNames": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "duration": {"type": "string"},
+                "renewBefore": {"type": "string"},
+                "privateKey": {"type": "object"}
+              }
+            },
+            "minVersion": {"type": "string", "enum": ["1.0", "1.1", "1.2", "1.3"]},
+            "clientCA": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "configMapName": {"type": "string"},
+                "key": {"type": "string"},
+                "allowUnauthenticatedReads": {"type": "boolean"}
+              }
+            },
+            "restart": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "schedule": {"type": "string"},
+                "image": {"$ref": "#/definitions/image"},
+                "resources": {"type": "object"}
+              }
+            }
+          }
         }
       }
     }
