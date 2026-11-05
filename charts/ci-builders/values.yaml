@@ -327,8 +327,8 @@ cacheRedirect:
   # own deployment and bucket. A write is bounded
   # (hex keys only, a Content-Length, `maxEntryBytes`, committed only when the
   # body arrived whole, the first write of a key wins) but, unless `writeAuth`
-  # below is set, not authenticated. A stable runner never reads what a preview job wrote because the tiers do
-  # not share a deployment or a bucket.
+  # below is set, not authenticated. A stable runner never reads what a
+  # preview job wrote because the tiers do not share a deployment or a bucket.
   gradle:
     enabled: false
     prefix: gradle/
