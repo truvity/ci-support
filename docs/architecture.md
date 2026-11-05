@@ -540,15 +540,16 @@ metrics, identity and tests as the other front-ends.
 `HttpBuildCache` protocol, under `/gradle/cache/<key>`: a GET of a stored
 entry is a **redirect** to a presigned URL of it (Gradle follows it; verified
 with 8.14), a miss is a 404, and a PUT stores the entry. It is the one
-front-end that is **writable** by whoever can reach the service, so the
-network policy and the tier are what govern who may write. The stable tier
+front-end that is **writable**: by whoever can reach the service, unless
+`gradle.writeAuth` names the writers' credential (see "Who may write the
+build caches" below). The stable tier
 has it on too: it is a separate deployment with a bucket of its own and a
 network policy that admits only stable runners, so what a stable job reads
 is only what a stable job wrote, never a preview job's. (Turning it on for
 stable was an owner decision, taken with that isolation in mind; a
 deployment whose tiers share a bucket or a service must leave it off.)
 
-A write is bounded, not authenticated: the key must be 32 to 128 hexadecimal
+A write is bounded (and, with `writeAuth`, authenticated): the key must be 32 to 128 hexadecimal
 digits (what Gradle sends, a hash of the task's inputs); `Content-Length` is
 required (411) and at most `gradle.maxEntryBytes` (default 512 MiB; 413
 above it, which Gradle reads as "too large to cache" and carries on); the
@@ -557,10 +558,50 @@ discarded, and a client that stops sending is let go after `-idle-timeout`);
 and **the first write of a key wins**: a later PUT of an existing key is a
 204 that changes nothing, so an entry already in the store cannot be
 replaced by another job's. `GET /gradle/cache/` answers 200: the probe.
-Metrics: `result` `stored` and `rejected` count the writes.
+Metrics: `result` `stored`, `rejected` and `unauthorized` count the writes.
 
 The bucket's expiry ages entries out like everything else; a hot entry that
 expires is rebuilt and pushed again.
+
+### Who may write the build caches
+
+The Gradle build cache and bazel-remote are the two caches a client writes,
+and a build reads what was written as if it had built it. So whoever can
+write either can put an output in front of every build of the tier, and the
+first write of a key wins. Reaching the service is a weak boundary for that:
+a gateway in front of the caches is reached by whatever the network admits,
+and a network range rarely separates the runners from everything else in the
+same subnets. Both caches can therefore require a credential for a WRITE and
+none for a read (v1.2.0), each off by default:
+
+| Cache | Value | What the pod runs with | What a writer sends |
+|---|---|---|---|
+| Gradle (cache-redirect) | `cacheRedirect.gradle.writeAuth.existingSecret`, `.key` (default `tokens`) | `-gradle-write-token-file`: the key, mounted; one token per line | the token as the password of Basic credentials (any user name), or as a Bearer token |
+| bazel-remote | `bazelRemote.writeAuth.existingSecret`, `.key` (default `htpasswd`) | `--htpasswd_file` (the key, mounted) and `--allow_unauthenticated_reads` | Basic credentials of the file: `grpcs://<user>:<password>@<host>`, or an `authorization: Basic ...` header |
+
+What follows for each:
+
+- **A read needs nothing**, so every reader keeps working while the writers
+  are moved over, and a reader without a credential reads what the writers
+  stored.
+- **A refused write never reaches the bucket.** cache-redirect answers 401
+  with a Basic challenge before it asks the store anything, and counts it as
+  `result="unauthorized"`; a token file it cannot read refuses every write
+  (503) rather than admitting all of them, and at start-up a missing or empty
+  file is a configuration error.
+- **Rotation.** The token file is read on every write, so a Secret updated in
+  place reaches the pods without a restart, and a file that holds the old
+  token and the new one accepts both while the writers move.
+- **Order.** Gradle turns its remote cache off for the rest of a build after a
+  store fails, so a writer without the credential loses its reads too, for
+  that build. Give the writers the credential first, then set `writeAuth`.
+  Check, before that, that the client does not send its credential on the
+  redirect of a hit: the presigned URL carries its own signature, and a store
+  refuses a request that carries a second one.
+- **What it does not decide**: who holds the credential. A credential every
+  job of a tier is given is a credential any job of that tier can print, so
+  this separates the tier's jobs from everything else, not one job from
+  another. A token per job is the stronger form and is not here.
 
 ### Metrics and operations
 

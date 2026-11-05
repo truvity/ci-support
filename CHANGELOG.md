@@ -3,6 +3,15 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+### Added
+
+- **Who may write the build caches** (docs/architecture.md, "Who may write the build caches"). Both are off by default, so a release that sets neither renders what v1.1.3 did (every golden is byte-identical).
+  - `cacheRedirect.gradle.writeAuth.existingSecret` / `.key` (default `tokens`): cache-redirect's new flag `-gradle-write-token-file` (also `CACHE_REDIRECT_GRADLE_WRITE_TOKEN_FILE`) names a file of tokens, one per line. A PUT to the Gradle build cache must carry one, as the password of Basic credentials or as a Bearer token, or is answered 401 before the store is asked anything; GET, HEAD and the probe need none. The file is mounted from the Secret and read on every write, so a rotation needs no restart; a file that cannot be read refuses every write (503), and a missing or empty one stops the pod at start. New metric result `unauthorized` (`cache_redirect_requests_total`), present at zero for every front-end like the others. Setting it with the Gradle front-end off is a render error.
+  - `bazelRemote.writeAuth.existingSecret` / `.key` (default `htpasswd`): bazel-remote runs with `--htpasswd_file` (the key, mounted) and `--allow_unauthenticated_reads`, so a write needs Basic credentials of the file and a read needs none.
+  - Gradle turns its remote cache off for the rest of a build after a refused store: give the writers their credential before turning either on.
+
 ## v1.1.3
 
 - Fixed: the wake proxy no longer stops a builder seconds after it is created, which left the builder permanently unable to serve. The proxy is now truvity/asg v0.9.1 (`ec2.WakeProxyVersion` and `WakeProxySHA256` were v0.9.0; `github.com/truvity/asg` moves to v0.9.1). v0.9.0 counted an untagged builder's idle time from the proxy's own start, so a builder replaced by an apply (a new image, a new launch template version) was stopped at the first idle check, in the middle of its first boot; cloud-init's once-per-instance steps that were cut off (the package install) never re-ran, the IMDS guard unit then failed on every wake, and buildkitd never started. v0.9.1 counts idle time from the instance's launch as well. A builder replaced while an older proxy ran keeps the broken first boot: apply the new proxy first, then replace the builder. A new proxy release is a new launch template version, so the proxy instance is refreshed on the next apply.

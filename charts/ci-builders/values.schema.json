@@ -4,6 +4,14 @@
   "description": "Open, not strict: only types, and the inputs the chart cannot work without. The estate facts -- which runner namespaces may reach each component -- have no default and are required while the component and its NetworkPolicy are on, because a cache that admits nobody cannot work.",
   "type": "object",
   "definitions": {
+    "writeAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "key": {"type": "string", "minLength": 1}
+      }
+    },
     "cacheHost": {
       "type": "string",
       "description": "A DNS host name (no scheme, path or port), or empty for none.",
@@ -423,7 +431,7 @@
         },
         "gradle": {
           "type": "object",
-          "description": "The Gradle remote build cache under /gradle/cache/. WRITABLE by every client that can reach the service: off by default; both presets turn it on, each tier in its own deployment and bucket.",
+          "description": "The Gradle remote build cache under /gradle/cache/. WRITABLE by every client that can reach the service unless writeAuth is set: off by default; both presets turn it on, each tier in its own deployment and bucket.",
           "properties": {
             "enabled": {
               "type": "boolean"
@@ -435,6 +443,10 @@
             "maxEntryBytes": {
               "type": "integer",
               "minimum": 1
+            },
+            "writeAuth": {
+              "$ref": "#/definitions/writeAuth",
+              "description": "Who may write: empty existingSecret, every client that can reach the service; set, a PUT must carry a token of the Secret's key (the password of Basic credentials, or a Bearer token). Reads need none."
             }
           }
         },
@@ -599,6 +611,10 @@
             "create": {"type": "boolean"},
             "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
           }
+        },
+        "writeAuth": {
+          "$ref": "#/definitions/writeAuth",
+          "description": "Who may write: empty existingSecret, every client that can reach bazel-remote; set, --htpasswd_file from the Secret's key and --allow_unauthenticated_reads, so a write needs Basic credentials and a read none."
         }
       }
     }

@@ -100,6 +100,12 @@ spec:
             - --max_size={{ $z.maxSizeGb }}
             - --port=8080
             - --grpc_port=9092
+            {{- if $z.writeAuth.existingSecret }}
+            # Writes need Basic credentials of the htpasswd file; reads need none
+            # (bazelRemote.writeAuth).
+            - --htpasswd_file=/etc/bazel-remote/auth/htpasswd
+            - --allow_unauthenticated_reads
+            {{- end }}
             {{- if $z.s3.enabled }}
             # S3 is a PROXY backend in front of --dir above (upstream
             # bazel-remote docs): the PVC stays the working set and
@@ -128,6 +134,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if $z.writeAuth.existingSecret }}
+            - name: write-auth
+              mountPath: /etc/bazel-remote/auth
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml $z.resources | nindent 12 }}
           securityContext:
@@ -139,6 +150,14 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: bazel-remote-data
+        {{- with $z.writeAuth.existingSecret }}
+        - name: write-auth
+          secret:
+            secretName: {{ . }}
+            items:
+              - key: {{ required "bazelRemote.writeAuth.key is required with writeAuth.existingSecret" $z.writeAuth.key }}
+                path: htpasswd
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

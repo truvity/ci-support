@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,4 +199,125 @@ func dial(t *testing.T, f *fixture) net.Conn {
 	t.Cleanup(func() { _ = conn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	return conn
+}
+
+// writeTokens is a token file in a test directory, for -gradle-write-token-file.
+func writeTokens(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "tokens")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func (f *fixture) putAs(t *testing.T, path string, body []byte, auth func(*http.Request)) reply {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, f.srv.URL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth != nil {
+		auth(req)
+	}
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return reply{code: resp.StatusCode, header: resp.Header}
+}
+
+func TestGradleWriteTokenRefusesAnonymousWrites(t *testing.T) {
+	tokens := writeTokens(t, "# the writers' token\nold-token\n\n  new-token  \n")
+	f := newGradleFixture(t, "-gradle-write-token-file", tokens)
+	path := "/gradle/cache/" + gradleKey
+
+	refused := map[string]func(*http.Request){
+		"no credential":       nil,
+		"wrong password":      func(r *http.Request) { r.SetBasicAuth("ci", "guess") },
+		"wrong bearer":        func(r *http.Request) { r.Header.Set("Authorization", "Bearer guess") },
+		"comment as password": func(r *http.Request) { r.SetBasicAuth("ci", "# the writers' token") },
+		"empty password":      func(r *http.Request) { r.SetBasicAuth("new-token", "") },
+		"token as user name":  func(r *http.Request) { r.SetBasicAuth("new-token", "x") },
+	}
+	for name, auth := range refused {
+		r := f.putAs(t, path, []byte("planted"), auth)
+		if r.code != http.StatusUnauthorized || !strings.HasPrefix(r.header.Get("WWW-Authenticate"), "Basic ") {
+			t.Errorf("%s: %d %q, want 401 with a Basic challenge", name, r.code, r.header.Get("WWW-Authenticate"))
+		}
+	}
+	if keys := f.store.keys(); len(keys) != 0 {
+		t.Fatalf("a refused write reached the store: %v", keys)
+	}
+	if !strings.Contains(f.metrics(t), `cache_redirect_requests_total{frontend="gradle",result="unauthorized"} 6`) {
+		t.Errorf("the refusals are not counted as unauthorized:\n%s", f.metrics(t))
+	}
+
+	// Either token of the file writes, as Basic (Gradle) or Bearer.
+	if r := f.putAs(t, path, []byte("entry"), func(r *http.Request) { r.SetBasicAuth("ci", "new-token") }); r.code != http.StatusNoContent {
+		t.Fatalf("PUT with the new token: %d, want 204", r.code)
+	}
+	other := "/gradle/cache/" + strings.Repeat("0", 32)
+	if r := f.putAs(t, other, []byte("entry"), func(r *http.Request) { r.Header.Set("Authorization", "Bearer old-token") }); r.code != http.StatusNoContent {
+		t.Fatalf("PUT with the old token as a Bearer token: %d, want 204", r.code)
+	}
+
+	// Reads need no credential.
+	if r := f.get(t, path); r.code != http.StatusFound {
+		t.Errorf("anonymous GET of a stored entry: %d, want 302", r.code)
+	}
+	if r := f.do(t, http.MethodHead, path); r.code != http.StatusOK {
+		t.Errorf("anonymous HEAD: %d, want 200", r.code)
+	}
+	if r := f.get(t, "/gradle/cache/"); r.code != http.StatusOK {
+		t.Errorf("anonymous probe: %d, want 200", r.code)
+	}
+}
+
+func TestGradleWriteTokenFileIsReadOnEveryWrite(t *testing.T) {
+	tokens := writeTokens(t, "first\n")
+	f := newGradleFixture(t, "-gradle-write-token-file", tokens)
+	path := "/gradle/cache/" + gradleKey
+	as := func(tok string) func(*http.Request) { return func(r *http.Request) { r.SetBasicAuth("ci", tok) } }
+
+	if err := os.WriteFile(tokens, []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.putAs(t, path, []byte("x"), as("first")); r.code != http.StatusUnauthorized {
+		t.Errorf("PUT with the rotated-out token: %d, want 401", r.code)
+	}
+	if r := f.putAs(t, path, []byte("x"), as("second")); r.code != http.StatusNoContent {
+		t.Errorf("PUT with the new token: %d, want 204", r.code)
+	}
+
+	// A file that goes away refuses every write rather than admitting all.
+	if err := os.Remove(tokens); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.putAs(t, "/gradle/cache/"+strings.Repeat("1", 32), []byte("x"), as("second")); r.code != http.StatusServiceUnavailable {
+		t.Errorf("PUT with the token file gone: %d, want 503", r.code)
+	}
+	if r := f.get(t, path); r.code != http.StatusFound {
+		t.Errorf("GET with the token file gone: %d, want 302 (reads need no credential)", r.code)
+	}
+}
+
+func TestGradleWriteTokenFileIsChecked(t *testing.T) {
+	base := []string{"-s3-bucket", "example"}
+	cases := map[string][]string{
+		"missing file":     {"-gradle", "-gradle-write-token-file", filepath.Join(t.TempDir(), "absent")},
+		"no token in it":   {"-gradle", "-gradle-write-token-file", writeTokens(t, "# none yet\n\n")},
+		"gradle front off": {"-gradle-write-token-file", writeTokens(t, "tok\n")},
+	}
+	for name, args := range cases {
+		if _, err := parseConfig(append(base, args...), func(string) string { return "" }, io.Discard); err == nil {
+			t.Errorf("%s: accepted, want an error", name)
+		}
+	}
+	env := map[string]string{"CACHE_REDIRECT_GRADLE_WRITE_TOKEN_FILE": writeTokens(t, "tok\n")}
+	cfg, err := parseConfig(append(base, "-gradle"), func(k string) string { return env[k] }, io.Discard)
+	if err != nil || cfg.GradleWriteAuth == "" {
+		t.Errorf("the environment form: %v, %+v", err, cfg)
+	}
 }
