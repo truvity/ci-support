@@ -93,11 +93,28 @@ survives builder replacement — expect one slower build cycle after a
 cache volume reset, not breakage. The nix, npm and Bazel caches degrade to
 upstream when down.
 
-The Gradle build cache of cache-redirect (preview only) is the one cache a job can write. If an entry is ever wrong, delete the object under
-`<gradle prefix><key>` (or the whole prefix: every build is then one cold
-build, then warm again); the key is the one Gradle prints as
-`Build cache key for task ':<task>' is <key>`. `rejected` and `stored` in
-`cache_redirect_requests_total{frontend="gradle"}` count the writes.
+The Gradle build cache of cache-redirect is the one cache a job can write.
+If an entry is ever wrong, delete the object under `<gradle prefix><key>`
+(or the whole prefix: every build is then one cold build, then warm again);
+the key is the one Gradle prints as
+`Build cache key for task ':<task>' is <key>`. `stored`, `rejected` and
+`unauthorized` in `cache_redirect_requests_total{frontend="gradle"}` count
+the writes.
+
+With `cacheRedirect.gradle.writeAuth` set (docs/architecture.md, "Who may
+write the build caches"):
+
+- **A rising `unauthorized`** is writes refused for want of an accepted
+  credential: a writer that was not given the token, or still has a
+  rotated-out one. Gradle turns its remote cache off for the rest of that
+  build, so those builds also stop reading the cache.
+- **Every write answered 503** `write credentials unavailable` (also counted
+  as `unauthorized`, and logged as `gradle write tokens`) is the token file
+  that cannot be read, or holds no token: check the Secret and its mount.
+  Reads keep working.
+- **Rotation**: put the old token and the new one in the Secret's key, one
+  per line; the file is read on every write, so no restart is needed. Move
+  the writers to the new token, then remove the old one.
 
 The npm front-end of cache-redirect keeps a stored copy of every packument
 under `<npm prefix>_meta/`: it is what installs fall back to when the registry

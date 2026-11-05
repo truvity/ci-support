@@ -345,7 +345,10 @@ cacheRedirect:
     # release namespace and is mounted, not copied into the environment; the
     # file is read on every write, so a rotation needs no restart. Gradle turns
     # the remote cache off for the rest of a build after a refused store, so
-    # give the writers their credential BEFORE setting this.
+    # give the writers their credential BEFORE setting this. Writers should
+    # reach the cache over TLS (a gateway, or an https host): Gradle sends the
+    # Basic credentials preemptively on every request, reads too, so on plain
+    # HTTP the token is readable by anything on the path.
     # docs/architecture.md, "Who may write the build caches".
     writeAuth:
       existingSecret: ""
