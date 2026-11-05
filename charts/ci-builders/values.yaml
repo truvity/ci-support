@@ -533,20 +533,29 @@ bazelRemote:
       # Empty: server TLS only, every client that can reach the service
       # reads AND writes (the step between "behind a terminating gateway"
       # and "writers need a certificate"). Set: a ConfigMap of the release
-      # namespace holding the client CA certificate (`key`), for example
-      # the one buildkitd.mtls.clientCA.bundle publishes.
+      # namespace holding the client CA certificate (`key`). The intended
+      # one is the BuildKit client CA, `buildkitd-client-ca` (what
+      # buildkitd.mtls.clientCA's Bundle publishes): the runners then write
+      # with the client certificate they already hold for the builders.
       configMapName: ""
       key: ca.crt
       # true: reads need no certificate (--allow_unauthenticated_reads).
       # false: every request but the gRPC health check needs one.
       allowUnauthenticatedReads: true
     # A CronJob that restarts bazel-remote on `schedule` (kubectl rollout
-    # restart, with a Role that may get and patch this one Deployment and
-    # nothing else), so a certificate cert-manager renewed `renewBefore`
-    # ahead of expiry is loaded in time. The restart is a few seconds
-    # without the cache (one replica, Recreate); a moon or Bazel client goes
-    # on with its local cache meanwhile. Turn it off only where something
-    # else restarts the pod well inside `renewBefore`.
+    # restart), so a certificate cert-manager renewed `renewBefore` ahead of
+    # expiry is loaded in time. The restart is a few seconds without the
+    # cache (one replica, Recreate); a moon or Bazel client goes on with its
+    # local cache meanwhile. Turn it off only where something else restarts
+    # the pod well inside `renewBefore`.
+    #
+    # Its own ServiceAccount's Role may get and patch the one Deployment
+    # bazel-remote. Patch on a Deployment is as strong as creating a pod in
+    # the release namespace: the pod template can be rewritten to mount any
+    # Secret there or run as bazel-remote's ServiceAccount. So that is the
+    # reach of `image`: pull it through your own pull-through cache or
+    # mirror (`registry`) and pin it by `digest` (which wins over `tag`;
+    # move both together).
     restart:
       enabled: true
       schedule: "17 3 * * 0"
@@ -555,6 +564,7 @@ bazelRemote:
         repository: kubectl
         # renovate: datasource=docker depName=registry.k8s.io/kubectl
         tag: v1.35.9
+        digest: "" # sha256:…, empty renders the tag
       resources:
         requests:
           cpu: 10m

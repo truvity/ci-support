@@ -112,8 +112,12 @@ spec:
 
 ---
 # Source: ci-builders/templates/bazel-remote.yaml
-# Get and patch this one Deployment, nothing else: what `kubectl rollout
-# restart` needs.
+# Get and patch this one Deployment: what `kubectl rollout restart` needs.
+# Patch on a Deployment is as strong as creating a pod in this namespace (the
+# pod template can be rewritten to mount any Secret here or run as any
+# ServiceAccount), so the token is this dedicated ServiceAccount's, mounted
+# only in the CronJob's pod. Deleting the pod instead would need list and
+# delete on every pod here (pod names are random) and lose Recreate's order.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -390,7 +394,8 @@ spec:
               type: RuntimeDefault
           containers:
             - name: restart
-              image: registry.example/kubectl:v1.35.9
+              # Digest-pinned (restart.image.digest): the tag is not used.
+              image: registry.example/registry.k8s.io/kubectl@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
               imagePullPolicy: IfNotPresent
               args: ["rollout", "restart", "deployment/bazel-remote"]
               env:

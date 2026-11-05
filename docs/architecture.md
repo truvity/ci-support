@@ -630,6 +630,9 @@ by SNI.
   become a passthrough (a TLSRoute to port 9092 for the same name) in the
   same change. In-cluster clients dial `grpcs://` too, with a name on the
   certificate (add `bazel-remote.<namespace>.svc` to `dnsNames` for them).
+  There is no window in which both plain and TLS are served: one process
+  owns the data volume (one replica, `Recreate`), and its TLS flags apply to
+  both ports, so the chart offers no plain listener next to the TLS one.
 - **A read needs nothing.** The read methods (`GetCapabilities`,
   `GetActionResult`, `FindMissingBlobs`, `BatchReadBlobs`, `GetTree`,
   ByteStream `Read`, HTTP `GET` and `HEAD`) and the gRPC health check are
@@ -642,20 +645,68 @@ by SNI.
   at all: moon then turns its remote cache off for the run, reads included.
   Give writers a certificate of the CA in `clientCA`, and configure mutual TLS
   on a client only where its files are.
-- **Order, so no reader is cut off.** (1) `tls.enabled` with the gateway's
-  passthrough, no `clientCA`: everyone still reads and writes. (2) The writers
-  get their certificate and configure mutual TLS (moon:
-  `MOON_REMOTE_MTLS_CA_CERT`, `_CLIENT_CERT`, `_CLIENT_KEY`, paths to PEM
-  files); a server that requests no certificate accepts them as before.
-  (3) `tls.clientCA.configMapName`: writes without a certificate stop.
-  Measured with bazel-remote v2.6.2 and moon 2.6.2: each step left the readers
-  reading.
+- **The client CA is the BuildKit client CA.** Set
+  `tls.clientCA.configMapName: buildkitd-client-ca`, the ConfigMap the
+  `buildkitd.mtls.clientCA` `Bundle` publishes ([mtls.md](mtls.md#the-same-ca-for-bazel-remotes-writers)).
+  The runners then present the client certificate they already hold for the
+  builders (`cert.pem`, `key.pem`): nothing new to issue or deliver. Name a
+  `serverCertificate.issuerRef` whose CA is in the bundle those runners
+  already trust (`ca.pem`), so the same three files configure moon.
+- **Order, and who loses the cache at which step.** A client that cannot
+  connect turns moon's remote cache off for the run, reads included; the
+  task still passes, cold.
+  0. **Move the plain in-cluster clients first.** A client that dials
+     `grpc://bazel-remote.<namespace>.svc:9092` (h2c) or
+     `http://…:8080` cannot speak TLS before the server does and cannot
+     speak plain after, so step 1 cuts it off. Point it at the gateway's
+     `grpcs://` name beforehand (while the gateway still terminates TLS),
+     and it rides step 1 like any gateway client. Where the cluster's
+     runners cannot reach the gateway, step 1 is a flag day for them
+     instead: in the same change, switch them to
+     `grpcs://bazel-remote.<namespace>.svc:9092` (that name in `dnsNames`,
+     the issuer's CA trusted); runs between bazel-remote's restart and the
+     runners' new configuration go without the remote cache.
+  1. **`tls.enabled` with the gateway's passthrough, no `clientCA`.** A
+     client on the gateway's `grpcs://` name keeps reading and writing if it
+     trusts the issuer of bazel-remote's certificate (it no longer sees the
+     gateway's) and that name is in `dnsNames`; a client that does not trust
+     the issuer loses the cache until it does, so check the issuer first.
+     Expect a few seconds without the cache while the pod restarts.
+  2. **The writers configure mutual TLS** (moon: `MOON_REMOTE_MTLS_CA_CERT`,
+     `_CLIENT_CERT`, `_CLIENT_KEY`, paths to PEM files, set only where the
+     files are). A server that requests no certificate accepts them as
+     before; nobody loses the cache.
+  3. **`tls.clientCA.configMapName`.** Writes without a certificate stop;
+     reads go on. A client with a certificate of another CA, or mutual TLS
+     configured and its files missing, loses the cache (see above).
+
+  Measured with bazel-remote v2.6.2 and moon 2.6.2 for clients that already
+  dialled TLS: steps 1 to 3 each left them reading.
 - **Renewal.** bazel-remote loads its certificate and the client CA once, at
   start. `tls.restart` (on with `tls.enabled`) restarts the Deployment on a
   schedule, weekly by default, inside the certificate's `renewBefore` (30
   days by default); each restart is a few seconds without the cache, which a
   moon or Bazel client rides out on its local cache. Turn it off only where
   something else restarts the pod well inside `renewBefore`.
+- **What the restart can do.** The CronJob runs `kubectl rollout restart`
+  as its own ServiceAccount `bazel-remote-restart`, whose Role grants `get`
+  and `patch` on the one Deployment `bazel-remote` and nothing more. `patch`
+  on a Deployment is still as strong as creating a pod in the release
+  namespace: the holder can rewrite the pod template, so the pod can mount
+  any Secret there (the client certificates, `bazel-remote-tls`) and run as
+  bazel-remote's ServiceAccount (its S3 role, with `s3.enabled`). The token
+  is mounted only in the CronJob's pod, so that reach is the reach of the
+  `kubectl` image it runs. The image is `registry.k8s.io/kubectl` by
+  default; an estate pulls it through its own pull-through cache or mirror
+  (`restart.image.registry`) and can pin it by digest
+  (`restart.image.digest`, which wins over the tag). Not offered, and why:
+  deleting the pod instead needs `list` and `delete` on every pod of the
+  namespace (pod names are random, so `resourceNames` cannot narrow it) and
+  loses `Recreate`'s guarantee that the old pod is gone before the new one
+  mounts the volume; a reloader in bazel-remote's pod would add an image to
+  the cache itself. An estate that wants the patch narrowed to the restart
+  annotation can add an admission policy for that ServiceAccount; the chart
+  renders nothing cluster-scoped for it.
 - **What it does not decide**: who holds a client certificate, as for the
   Gradle token. The CA's issuance policy does; a certificate every job of a
   tier is given is one any job of that tier can copy.

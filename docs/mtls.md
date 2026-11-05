@@ -114,11 +114,17 @@ store when an object goes (`deletionPolicy: None`).
 
 bazel-remote can require a client certificate for a write
 (`bazelRemote.tls.clientCA`, [architecture.md](architecture.md#who-may-write-the-build-caches)).
-Pointing it at the ConfigMap the client CA's `Bundle` publishes
-(`clientCA.configMapName`, default `buildkitd-client-ca`) makes the runners'
-BuildKit client certificate their bazel-remote write credential as well: no
-second certificate to issue and deliver. The cost is that the two are one
-decision: whoever may dial a builder may also write the task cache.
+Its client CA is this one: set `bazelRemote.tls.clientCA.configMapName` to
+the ConfigMap the client CA's `Bundle` publishes
+(`buildkitd.mtls.clientCA.configMapName`, default `buildkitd-client-ca`).
+The runners' BuildKit client certificate is then their bazel-remote write
+credential as well, and a runner presents the `cert.pem` and `key.pem` it
+already holds: no second certificate to issue and deliver. Give
+bazel-remote a server certificate from an issuer whose CA is in the runners'
+`ca.pem` (`bazelRemote.tls.serverCertificate.issuerRef`), and the same three
+files configure moon (`MOON_REMOTE_MTLS_CA_CERT`, `_CLIENT_CERT`,
+`_CLIENT_KEY`). The cost is that the two are one decision: whoever may dial
+a builder may also write the task cache.
 
 ## What this does not do
 
