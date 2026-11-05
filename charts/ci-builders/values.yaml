@@ -461,20 +461,6 @@ bazelRemote:
     # (IRSA); Pod Identity needs none.
     create: false
     annotations: {}
-  # WHO MAY WRITE (v1.2.0). Empty `existingSecret`: whoever can reach the
-  # service reads AND writes, as before. Set: bazel-remote runs with
-  # `--htpasswd_file` (the Secret's `key`, an htpasswd file; bcrypt entries,
-  # `htpasswd -B`) and `--allow_unauthenticated_reads`, so a write
-  # (ByteStream Write, CAS BatchUpdateBlobs, AC UpdateActionResult, an HTTP
-  # PUT) needs Basic credentials of the file and a read needs none. A gRPC
-  # client sends them from the address, grpcs://<user>:<password>@<host>, or as
-  # an `authorization: Basic ...` header; a gateway in front must pass that
-  # header through. A client that sends none still reads; its writes fail, so
-  # give the writers their credential BEFORE setting this.
-  # docs/architecture.md, "Who may write the build caches".
-  writeAuth:
-    existingSecret: ""
-    key: htpasswd
   s3:
     # Off by default. Enabling needs the bucket, its region, and a
     # matching Pod Identity association (namespace +

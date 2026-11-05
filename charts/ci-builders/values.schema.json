@@ -611,10 +611,6 @@
             "create": {"type": "boolean"},
             "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
           }
-        },
-        "writeAuth": {
-          "$ref": "#/definitions/writeAuth",
-          "description": "Who may write: empty existingSecret, every client that can reach bazel-remote; set, --htpasswd_file from the Secret's key and --allow_unauthenticated_reads, so a write needs Basic credentials and a read none."
         }
       }
     }
