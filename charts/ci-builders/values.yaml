@@ -374,6 +374,30 @@ cacheRedirect:
     registry: https://registry.npmjs.org
     # How long a packument is served without asking the registry again.
     freshTTL: 2m
+  # GitHub release assets of PUBLIC repositories (read-only, no GitHub
+  # credential), for CI that downloads tools from github.com/<owner>/<repo>/
+  # releases/download/... and fails when GitHub's release edge answers 504. A
+  # client asks
+  #   <base>/github/<owner>/<repo>/releases/download/<tag>/<asset>
+  # (the URL it would ask github.com for, with the leading https://github.com/
+  # replaced by <base>/github/). A hit is a 302 to a presigned URL of the
+  # bucket, with no request to GitHub. A miss is fetched whole (GitHub's redirect
+  # to its asset host is followed), asked again with a doubling back-off for
+  # `retryWindow` while GitHub answers 429 or 5xx, does not answer or breaks off
+  # mid-body, committed to the bucket, and only then answered with the same
+  # redirect; GitHub's 404 is a 404 and is never stored. Only that path shape is
+  # served, each element from a narrow character set, and a redirect off GitHub's
+  # own hosts is refused, so the route is not an open proxy. An asset larger
+  # than `maxBytes` is refused (413). Release assets are immutable by
+  # convention: an asset replaced under the same tag keeps being served from the
+  # bucket until its object is deleted. It keeps its path under /github on every
+  # Host (it has no host of its own). OFF by default.
+  githubReleases:
+    enabled: false
+    prefix: github/
+    upstream: https://github.com
+    maxBytes: 2147483648
+    retryWindow: 2m
   # A HOST NAME for a front-end (v7.7.0): a request whose Host header is the
   # name is served at the ROOT of that front-end, so a gateway routes by name
   # to the Service and rewrites nothing. A client is then given a base URL

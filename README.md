@@ -5,7 +5,7 @@ The CI services every GitHub Actions runner uses (caches and docker builders), i
 | Part | Where | What it is |
 |---|---|---|
 | `ci-builders` chart | `charts/ci-builders` | the Helm chart that deploys the services below |
-| cache-redirect | `image/cache-redirect` | a pull-through cache for Go modules, Nix, Maven, Gradle and npm that answers a hit with a redirect to a presigned URL of its bucket |
+| cache-redirect | `image/cache-redirect` | a pull-through cache for Go modules, Nix, Maven, Gradle, npm and GitHub release assets that answers a hit with a redirect to a presigned URL of its bucket |
 | Builder trust | the chart's `buildkitd.mtls.clientCA`, `externalBuilders` | the client CA, the client certificates of runners outside the cluster, and the builders' server certificates pushed to a store (see [docs/mtls.md](docs/mtls.md)) |
 | Other caches | the chart's `bazelRemote`, `npmCache` | bazel-remote and the npm read-through cache |
 | Docker builders | `pkg/buildkit`, `pkg/buildkit/ec2` | Go libraries: the BuildKit daemon rendered for a machine of its own (provider-neutral), and Pulumi components that run it as one on-demand EC2 instance per architecture behind a wake proxy on a shared network load balancer, with [truvity/asg](https://github.com/truvity/asg) |

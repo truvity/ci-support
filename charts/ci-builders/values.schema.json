@@ -280,7 +280,7 @@
     },
     "cacheRedirect": {
       "type": "object",
-      "description": "cache-redirect: the Nix, Go module, Maven and npm pull-through cache (and, opt-in, the Gradle build cache) that redirects hits to presigned URLs of its bucket. Off by default; enabled, it needs the bucket, its region and the runner namespaces allowed to reach it.",
+      "description": "cache-redirect: the Nix, Go module, Maven and npm pull-through cache (and, opt-in, the Gradle build cache and GitHub release assets) that redirects hits to presigned URLs of its bucket. Off by default; enabled, it needs the bucket, its region and the runner namespaces allowed to reach it.",
       "properties": {
         "enabled": {
           "type": "boolean"
@@ -469,6 +469,33 @@
               "type": "string",
               "pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$",
               "description": "A Go duration: how long a packument is served without asking the registry again."
+            }
+          }
+        },
+        "githubReleases": {
+          "type": "object",
+          "description": "GitHub release assets of public repositories under /github/<owner>/<repo>/releases/download/<tag>/<asset>: a hit is a redirect to the bucket, a miss is fetched (retried for retryWindow), stored, then redirected. Off by default.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "upstream": {
+              "type": "string",
+              "pattern": "^https?://"
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The largest asset that is stored; a larger one is refused with 413."
+            },
+            "retryWindow": {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$",
+              "description": "A Go duration: how long GitHub is asked again while it answers 429 or 5xx, or breaks off mid-body."
             }
           }
         },

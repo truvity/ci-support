@@ -3,7 +3,7 @@
 {{- if not $c.s3.bucket }}{{ fail "cacheRedirect.s3.bucket is required when cacheRedirect is enabled" }}{{ end }}
 {{- if not $c.s3.region }}{{ fail "cacheRedirect.s3.region is required when cacheRedirect is enabled (\"auto\" for Cloudflare R2)" }}{{ end }}
 {{- if and $c.topologySpread.zone.enabled (int $c.topologySpread.zone.minDomains) (ne $c.topologySpread.zone.whenUnsatisfiable "DoNotSchedule") }}{{ fail "cacheRedirect.topologySpread.zone.minDomains needs whenUnsatisfiable: DoNotSchedule (Kubernetes refuses it with ScheduleAnyway)" }}{{ end }}
-{{- if not (or $c.nix.enabled $c.goproxy.enabled $c.maven.enabled $c.gradle.enabled $c.npm.enabled) }}{{ fail "cacheRedirect: nix, goproxy, maven, gradle and npm are all disabled; there is nothing to serve" }}{{ end }}
+{{- if not (or $c.nix.enabled $c.goproxy.enabled $c.maven.enabled $c.gradle.enabled $c.npm.enabled $c.githubReleases.enabled) }}{{ fail "cacheRedirect: nix, goproxy, maven, gradle, npm and githubReleases are all disabled; there is nothing to serve" }}{{ end }}
 {{- /* cacheRedirect.hosts: a request for the name of a front-end is served at that front-end's root (-hosts=kind=host). */}}
 {{- $hostsSeen := dict }}
 {{- range $kind, $host := $c.hosts }}
@@ -170,6 +170,14 @@ spec:
             - {{ printf "-npm-prefix=%s" $c.npm.prefix | quote }}
             - {{ printf "-npm-registry=%s" $c.npm.registry | quote }}
             - {{ printf "-npm-fresh=%s" $c.npm.freshTTL | quote }}
+            {{- end }}
+            {{- if $c.githubReleases.enabled }}
+            # GitHub release assets of public repositories (/github/<owner>/<repo>/releases/download/<tag>/<asset>).
+            - -github-releases=true
+            - {{ printf "-github-releases-prefix=%s" $c.githubReleases.prefix | quote }}
+            - {{ printf "-github-releases-upstream=%s" $c.githubReleases.upstream | quote }}
+            - {{ printf "-github-releases-max-bytes=%d" (int64 $c.githubReleases.maxBytes) | quote }}
+            - {{ printf "-github-releases-retry-window=%s" $c.githubReleases.retryWindow | quote }}
             {{- end }}
             {{- range $kind, $host := $c.hosts }}
             {{- if $host }}

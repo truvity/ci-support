@@ -41,6 +41,17 @@ type object struct {
 	// onBody, when set, sees the whole body of a small object each time it
 	// is about to be served (a narinfo feeds the NAR index from it).
 	onBody func(body []byte)
+	// storeThenRedirect, for a large object, changes what a miss does: the
+	// object is fetched whole and committed to the store BEFORE the client
+	// is answered, and the answer is the redirect a hit gets, so the client
+	// never sees an upstream failure that a retry would have healed and
+	// never half an object (the GitHub release assets).
+	storeThenRedirect bool
+	// noNegative: an upstream 404 is not remembered in memory either.
+	noNegative bool
+	// maxBytes, with storeThenRedirect, refuses an object larger than this
+	// (413); 0: no limit.
+	maxBytes int64
 }
 
 // expectation is the size and Nix base-32 SHA-256 a body must have to be
@@ -74,6 +85,14 @@ type Cache struct {
 	// those answers are for, and a repeat is cheaper than a failed build.
 	retryFrontends map[string]bool
 	retryBackoff   time.Duration
+	// retryWindow are the front-ends whose upstream requests, and fetches of a
+	// whole object, are repeated for as long as this window lasts when the
+	// upstream answers 429 or any 5xx or does not answer at all (the GitHub
+	// release assets: its edge answers 504 for minutes at a time).
+	retryWindow map[string]time.Duration
+	// checkRedirect, per front-end, is the redirect policy of its upstream
+	// requests; absent: the client's own.
+	checkRedirect map[string]func(*http.Request, []*http.Request) error
 
 	mem     *lru // small immutable bodies
 	neg     *lru // upstream not-founds, for negativeTTL
@@ -107,6 +126,9 @@ type cacheOptions struct {
 	// RetryFrontends and RetryBackoff: see Cache. Zero backoff is one second.
 	RetryFrontends []string
 	RetryBackoff   time.Duration
+	// RetryWindow and CheckRedirect: see Cache.
+	RetryWindow   map[string]time.Duration
+	CheckRedirect map[string]func(*http.Request, []*http.Request) error
 }
 
 func newCache(bg context.Context, store Store, client *http.Client, m *Metrics, log *slog.Logger, o cacheOptions) *Cache {
@@ -120,6 +142,7 @@ func newCache(bg context.Context, store Store, client *http.Client, m *Metrics, 
 	}
 	return &Cache{
 		retryFrontends: retry, retryBackoff: o.RetryBackoff,
+		retryWindow: o.RetryWindow, checkRedirect: o.CheckRedirect,
 		store: store, client: client, metrics: m, log: log,
 		presignTTL: o.PresignTTL, negativeTTL: o.NegativeTTL, mutableTTL: o.MutableTTL, idleTimeout: o.IdleTimeout,
 		mem:      newLRU(o.MemoryBytes, now),
@@ -135,7 +158,7 @@ func newCache(bg context.Context, store Store, client *http.Client, m *Metrics, 
 // when it is there, by one shared upstream fetch when it is not.
 func (c *Cache) ServeImmutable(w http.ResponseWriter, r *http.Request, o object) {
 	head := r.Method == http.MethodHead
-	if v, ok := c.neg.Get(o.key); ok {
+	if v, ok := c.neg.Get(o.key); ok && !o.noNegative {
 		c.metrics.Request(o.frontend, resultNotFound)
 		writeCached(w, head, v)
 		return
@@ -195,15 +218,23 @@ func (c *Cache) ServeImmutable(w http.ResponseWriter, r *http.Request, o object)
 }
 
 func (c *Cache) redirect(w http.ResponseWriter, r *http.Request, o object) {
+	if c.writeRedirect(w, r, o) {
+		c.metrics.Request(o.frontend, resultRedirect)
+	}
+}
+
+// writeRedirect answers with a 302 to a presigned URL of o, or with the store
+// error, and reports whether it redirected. The caller counts the request.
+func (c *Cache) writeRedirect(w http.ResponseWriter, r *http.Request, o object) bool {
 	u, err := c.store.Presign(r.Context(), o.key, c.presignTTL)
 	if err != nil {
 		c.storeError(w, o, "presign", err)
-		return
+		return false
 	}
 	w.Header().Set("Location", u)
 	w.Header().Set("Cache-Control", "no-store") // the URL expires; never reuse it
 	w.WriteHeader(http.StatusFound)
-	c.metrics.Request(o.frontend, resultRedirect)
+	return true
 }
 
 func (c *Cache) storeError(w http.ResponseWriter, o object, op string, err error) {
@@ -272,9 +303,12 @@ func (c *Cache) pullThrough(w http.ResponseWriter, r *http.Request, o object) {
 	c.metrics.inFlight.Add(1)
 	defer c.metrics.inFlight.Add(-1)
 
-	if o.large {
+	switch {
+	case o.large && o.storeThenRedirect:
+		c.leadStored(w, r, o, f)
+	case o.large:
 		c.leadLarge(w, r, o, f)
-	} else {
+	default:
 		c.leadSmall(w, r, o, f)
 	}
 }
@@ -290,6 +324,9 @@ func (c *Cache) follow(w http.ResponseWriter, r *http.Request, o object, f *flig
 		c.redirect(w, r, o)
 	case f.res.status == http.StatusNotFound || f.res.status == http.StatusGone:
 		c.metrics.Request(o.frontend, resultNotFound)
+		writeCached(w, head, f.res)
+	case f.res.status == http.StatusRequestEntityTooLarge:
+		c.metrics.Request(o.frontend, resultRejected)
 		writeCached(w, head, f.res)
 	case f.res.status == http.StatusOK:
 		// The leader's copy was passed through and not stored (no index,
@@ -423,6 +460,98 @@ func (c *Cache) leadLarge(w http.ResponseWriter, r *http.Request, o object, f *f
 		"stored", f.stored, "seconds", time.Since(start).Seconds())
 }
 
+// errTooLarge is an object past the size a front-end accepts.
+var errTooLarge = errors.New("object is over the size limit")
+
+// capReader fails with errTooLarge once more than max bytes have been read.
+type capReader struct {
+	r    io.Reader
+	max  int64
+	read int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.read > c.max {
+		return n, errTooLarge
+	}
+	return n, err
+}
+
+// leadStored fetches a large object whole, commits it to the store, and only
+// then answers the client -- with the redirect a hit gets. Nothing reaches
+// the client while the object is fetched, so an upstream that fails (see
+// retryWindow) or breaks off mid-body is simply asked again, for as long as
+// the window lasts; the client sees either the redirect, upstream's 404, or
+// a 502 once the window is spent. A client that goes away does not stop the
+// fetch (it runs on c.bg): the waiting requests count on it, and the next
+// request for the object finds it stored.
+func (c *Cache) leadStored(w http.ResponseWriter, r *http.Request, o object, f *flight) {
+	deadline := time.Now().Add(c.retryWindow[o.frontend])
+	start := time.Now()
+	for attempt := 1; ; attempt++ {
+		resp, ok := c.fetchOrAnswer(w, r, o, f)
+		if !ok {
+			return
+		}
+		if o.maxBytes > 0 && resp.ContentLength > o.maxBytes {
+			_ = resp.Body.Close()
+			c.tooLarge(w, o, f, resp.ContentLength)
+			return
+		}
+		fr := newFetchReader(resp, nil, nil)
+		var body io.Reader = fr
+		if o.maxBytes > 0 {
+			body = &capReader{r: fr, max: o.maxBytes}
+		}
+		n, err := c.store.Put(c.bg, o.key, body, o.contentType)
+		_ = resp.Body.Close()
+		c.metrics.Upload(o.frontend, n, err)
+		if err == nil {
+			f.res = cached{status: http.StatusOK}
+			f.stored = true
+			c.metrics.Request(o.frontend, resultMiss)
+			c.log.Info("pulled through", "frontend", o.frontend, "key", logSafe(o.key), "bytes", n,
+				"stored", true, "attempts", attempt, "seconds", time.Since(start).Seconds())
+			c.writeRedirect(w, r, o)
+			return
+		}
+		switch {
+		case errors.Is(err, errTooLarge) || errors.Is(fr.err, errTooLarge):
+			c.tooLarge(w, o, f, fr.n)
+			return
+		case fr.err == nil:
+			// Upstream's body was fine; the store is what failed.
+			c.storeError(w, o, "put", err)
+			return
+		}
+		// The body broke off, stalled or was not the length it promised:
+		// nothing was committed. Ask again while the window allows.
+		wait := min(c.retryBackoff<<min(attempt-1, 10), maxWindowedWait)
+		c.log.Warn("upstream body failed", "frontend", o.frontend, "key", logSafe(o.key), "err", fr.err,
+			"bytes", fr.n, "attempt", attempt)
+		if time.Now().Add(wait).After(deadline) {
+			c.upstreamError(w, o, fr.err)
+			return
+		}
+		select {
+		case <-time.After(wait):
+		case <-c.bg.Done():
+			c.upstreamError(w, o, c.bg.Err())
+			return
+		}
+	}
+}
+
+func (c *Cache) tooLarge(w http.ResponseWriter, o object, f *flight, size int64) {
+	c.log.Warn("object over the size limit", "frontend", o.frontend, "key", logSafe(o.key), "bytes", size, "limit", o.maxBytes)
+	f.res = cached{status: http.StatusRequestEntityTooLarge, contentType: "text/plain; charset=utf-8",
+		body: []byte("object is over the size limit\n")}
+	c.metrics.Request(o.frontend, resultRejected)
+	writeCached(w, false, f.res)
+}
+
 // fetchOrAnswer GETs o upstream. On anything but a 200 it answers the
 // client (and the flight) itself and reports false.
 func (c *Cache) fetchOrAnswer(w http.ResponseWriter, r *http.Request, o object, f *flight) (*http.Response, bool) {
@@ -439,7 +568,9 @@ func (c *Cache) fetchOrAnswer(w http.ResponseWriter, r *http.Request, o object, 
 		// Passed on unchanged, never stored: GOPROXY's comma falls through
 		// on exactly these two, and Nix moves to its next substituter.
 		v := notFound(resp)
-		c.neg.Put(o.key, v, c.negativeTTL)
+		if !o.noNegative {
+			c.neg.Put(o.key, v, c.negativeTTL)
+		}
 		f.res = v
 		c.metrics.Request(o.frontend, resultNotFound)
 		writeCached(w, head, v)
@@ -575,6 +706,9 @@ func (c *Cache) fetch(ctx context.Context, method, frontend, url string) (*http.
 // fetchHeader is fetch with extra request headers (an Accept, a conditional
 // request).
 func (c *Cache) fetchHeader(ctx context.Context, method, frontend, url string, hdr http.Header) (*http.Response, error) {
+	if window := c.retryWindow[frontend]; window > 0 {
+		return c.fetchWindowed(ctx, method, frontend, url, hdr, time.Now().Add(window))
+	}
 	for attempt := 1; ; attempt++ {
 		resp, err := c.fetchOnce(ctx, method, frontend, url, hdr)
 		if err != nil || !c.retryFrontends[frontend] || attempt == maxAttempts || !retryableStatus(resp.StatusCode) {
@@ -593,6 +727,55 @@ func (c *Cache) fetchHeader(ctx context.Context, method, frontend, url string, h
 		}
 	}
 }
+
+// maxWindowedWait bounds one wait between the attempts of a windowed retry,
+// whether it is the back-off or an upstream's Retry-After.
+const maxWindowedWait = 15 * time.Second
+
+// fetchWindowed repeats a request until deadline while the upstream does not
+// answer (a timeout, a reset) or answers 429 or any 5xx, waiting a doubling
+// back-off (retryBackoff, 2x, 4x, ... up to maxWindowedWait) or the
+// upstream's Retry-After. When the next wait would end past the deadline the
+// last answer, or error, is returned as it is. Any other answer (a 404
+// above all) is returned at once.
+func (c *Cache) fetchWindowed(ctx context.Context, method, frontend, url string, hdr http.Header, deadline time.Time) (*http.Response, error) {
+	for attempt := 1; ; attempt++ {
+		resp, err := c.fetchOnce(ctx, method, frontend, url, hdr)
+		if err != nil && ctx.Err() != nil {
+			return nil, err // cancelled: not the upstream's doing
+		}
+		if errors.Is(err, errRedirectRefused) {
+			return nil, err // upstream will say the same again
+		}
+		if err == nil && !windowRetryable(resp.StatusCode) {
+			return resp, nil
+		}
+		wait := c.retryBackoff << min(attempt-1, 10)
+		if err == nil {
+			if s, perr := strconv.Atoi(resp.Header.Get("Retry-After")); perr == nil && s >= 0 {
+				wait = time.Duration(s) * time.Second
+			}
+		}
+		wait = min(wait, maxWindowedWait)
+		if time.Now().Add(wait).After(deadline) {
+			return resp, err
+		}
+		status := 0
+		if err == nil {
+			status = resp.StatusCode
+			_ = resp.Body.Close()
+		}
+		c.log.Info("upstream failed, asking again", "frontend", frontend, "url", logSafe(url),
+			"status", status, "err", err, "attempt", attempt, "wait", wait)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func windowRetryable(code int) bool { return code == http.StatusTooManyRequests || code >= 500 }
 
 func retryableStatus(code int) bool {
 	switch code {
@@ -616,8 +799,14 @@ func (c *Cache) fetchOnce(ctx context.Context, method, frontend, url string, hdr
 		req.Header[k] = v
 	}
 	req.Header.Set("User-Agent", userAgent)
+	client := c.client
+	if cr := c.checkRedirect[frontend]; cr != nil {
+		cl := *c.client
+		cl.CheckRedirect = cr
+		client = &cl
+	}
 	start := time.Now()
-	resp, err := c.client.Do(req)
+	resp, err := client.Do(req)
 	c.metrics.Upstream(frontend, time.Since(start))
 	if err != nil {
 		cancel()
