@@ -126,7 +126,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (*set
 	fs.IntVar(&c.MaxFetches, "max-fetches", 16, "upstream pull-throughs at once; more wait")
 	fs.DurationVar(&c.RetryBackoff, "retry-backoff", time.Second,
 		"the Maven and npm front-ends repeat an upstream request answered 429, 502, 503 or 504, up to 4 attempts, "+
-			"waiting this long times the attempt (or the upstream's Retry-After); the GitHub release assets double it each time instead, for -github-releases-retry-window")
+			"waiting this long times the attempt (or the upstream's Retry-After); the GitHub release assets "+
+			"double it each time instead, for -github-releases-retry-window")
 	fs.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "debug, info, warn or error")
 
 	fs.BoolVar(&c.Nix, "nix", true, "serve the Nix binary cache front-end under /nix")
@@ -163,7 +164,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (*set
 	fs.BoolVar(&c.GitHub, "github-releases", false,
 		"serve the release assets of public GitHub repositories under /github/<owner>/<repo>/releases/download/<tag>/<asset> (read-only, no GitHub credential)")
 	fs.StringVar(&c.GitHubPrefix, "github-releases-prefix", "github/", "store key prefix of the GitHub release assets")
-	fs.StringVar(&c.GitHubUpstream, "github-releases-upstream", "https://github.com", "where release assets are fetched from (GitHub's redirect to its asset host is followed)")
+	fs.StringVar(&c.GitHubUpstream, "github-releases-upstream", "https://github.com",
+		"where release assets are fetched from (GitHub's redirect to its asset host is followed)")
 	fs.Int64Var(&c.GitHubMaxBytes, "github-releases-max-bytes", 2<<30, "the largest release asset that is stored (413 above it)")
 	fs.DurationVar(&c.GitHubRetryWindow, "github-releases-retry-window", 2*time.Minute,
 		"how long a release asset is asked for again while GitHub answers 429 or 5xx, does not answer, or breaks off mid-body, before the client gets a 502")

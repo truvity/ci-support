@@ -77,10 +77,10 @@ func parseGitHubReleasePath(p string) (owner, repo, tag, asset string, ok bool) 
 	return owner, repo, tag, asset, true
 }
 
-// validGitHubName admits letters, digits and the given punctuation, up to max
+// validGitHubName admits letters, digits and the given punctuation, up to maxLen
 // bytes; never empty, never "." or "..".
-func validGitHubName(s string, max int, punct string) bool {
-	if s == "" || len(s) > max || s == "." || s == ".." {
+func validGitHubName(s string, maxLen int, punct string) bool {
+	if s == "" || len(s) > maxLen || s == "." || s == ".." {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
