@@ -258,7 +258,8 @@ func TestGitHubRefusesBadPaths(t *testing.T) {
 		// The mux itself moves a path with empty or dot elements to its
 		// cleaned form (307); that is a redirect to a path of this service,
 		// and the cleaned form is refused or served by the same rules.
-		if r.code != 404 && !(r.code == http.StatusTemporaryRedirect && strings.HasPrefix(r.header.Get("Location"), "/")) {
+		cleaned := r.code == http.StatusTemporaryRedirect && strings.HasPrefix(r.header.Get("Location"), "/")
+		if r.code != 404 && !cleaned {
 			t.Errorf("%s: %d %q, want 404", bad, r.code, r.header.Get("Location"))
 		}
 	}
