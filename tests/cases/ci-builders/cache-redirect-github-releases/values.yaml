@@ -1,0 +1,24 @@
+# cache-redirect with the GitHub release assets switched on over the defaults
+# (no preset), under the one prefix a runneridentity CacheRedirect role grants,
+# with a smaller size limit and a longer retry window.
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+cacheRedirect:
+  enabled: true
+  s3:
+    bucket: example-bucket
+    region: eu-example-1
+  nix:
+    prefix: cache-redirect/nix/
+  goproxy:
+    prefix: cache-redirect/goproxy/
+  maven:
+    prefix: cache-redirect/maven/
+  githubReleases:
+    enabled: true
+    prefix: cache-redirect/github/
+    maxBytes: 1073741824
+    retryWindow: 3m
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]

@@ -3,6 +3,17 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## Unreleased
+
+### Added
+
+- **cache-redirect serves GitHub release assets** (`GET /github/<owner>/<repo>/releases/download/<tag>/<asset>`; docs/architecture.md, "GitHub release assets front-end"), so CI on our own runners no longer fails when GitHub's release-download edge answers 504. Off by default, so a release that does not set it renders what v1.3.0 did (every existing golden is byte-identical).
+  - Contract for a consumer: the route is `<base>/github/<owner>/<repo>/releases/download/<tag>/<asset>`, the URL `https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>` with the leading `https://github.com/` swapped for `<base>/github/`. The environment variable `CI_RUNNER_GITHUB_RELEASES=<base>/github` is the convention a downloader reads to do that swap; it falls back to github.com when unset. Public assets only (no GitHub token is sent), `GET` and `HEAD`.
+  - A hit is a 302 to a presigned URL of the bucket and makes no upstream request. A miss is fetched from github.com (its redirect to `release-assets.githubusercontent.com` is followed), asked again with a doubling back-off for 2 minutes while GitHub answers 429 or 5xx, does not answer or breaks off mid-body, stored in the bucket, and only then answered with the same 302: nothing is streamed, so a client sees a redirect, a 404 or, after the window, a 502, never GitHub's 504. GitHub's 404 is a 404, never stored or remembered. An asset over the size limit (2 GiB) is a 413.
+  - Only the `releases/download` path shape is served (owner, repo, tag and asset each from a narrow character set; no empty, `.` or `..` element; anything else is a 404 with no upstream request), and a redirect off GitHub's hosts is refused, so the route is not an open proxy.
+  - New flags `-github-releases` (off), `-github-releases-prefix` (`github/`), `-github-releases-upstream` (`https://github.com`), `-github-releases-max-bytes` (2 GiB) and `-github-releases-retry-window` (2m). New chart values `cacheRedirect.githubReleases.{enabled,prefix,upstream,maxBytes,retryWindow}`; the key prefix has to be inside the prefix the cache's bucket role grants (`cache-redirect/github/` with the `runneridentity` role). Metrics: `cache_redirect_*{frontend="github"}`.
+  - An asset replaced under the same tag keeps being served as first stored: delete its object to refresh it.
+
 ## v1.3.0
 
 ### Added

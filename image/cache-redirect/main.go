@@ -1,6 +1,6 @@
 // cache-redirect is a pull-through cache for CI downloads that are
 // immutable and content-addressed -- Nix NARs, Go module zips, Maven
-// artifacts, npm tarballs -- whose bytes never pass through it on a hit, and, when asked
+// artifacts, npm tarballs, GitHub release assets -- whose bytes never pass through it on a hit, and, when asked
 // for, the Gradle remote build cache on the same store.
 //
 // The index is an S3 (or S3-compatible) bucket. A hit on a large object is
@@ -24,6 +24,7 @@
 //	/maven/...    the Maven repositories           (url:         <base>/maven/<repo>)
 //	/gradle/...   the Gradle build cache, OFF by default (url:   <base>/gradle/cache/)
 //	/npm/...      the npm registry                 (registry:    <base>/npm)
+//	/github/...   GitHub release assets, OFF by default (<base>/github/<owner>/<repo>/releases/download/<tag>/<asset>)
 //
 // Each of nix, maven, gradle and npm can also be served at the root of a host name
 // of its own (-hosts nix=nix.cache.example,maven=maven.cache.example), so a
@@ -88,6 +89,12 @@ type settings struct {
 	GradleMaxEntry  int64
 	GradleWriteAuth string
 
+	GitHub            bool
+	GitHubPrefix      string
+	GitHubUpstream    string
+	GitHubMaxBytes    int64
+	GitHubRetryWindow time.Duration
+
 	Npm       bool
 	NpmPrefix string
 	NpmReg    string
@@ -119,7 +126,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (*set
 	fs.IntVar(&c.MaxFetches, "max-fetches", 16, "upstream pull-throughs at once; more wait")
 	fs.DurationVar(&c.RetryBackoff, "retry-backoff", time.Second,
 		"the Maven and npm front-ends repeat an upstream request answered 429, 502, 503 or 504, up to 4 attempts, "+
-			"waiting this long times the attempt (or the upstream's Retry-After)")
+			"waiting this long times the attempt (or the upstream's Retry-After); the GitHub release assets double it each time instead, for -github-releases-retry-window")
 	fs.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "debug, info, warn or error")
 
 	fs.BoolVar(&c.Nix, "nix", true, "serve the Nix binary cache front-end under /nix")
@@ -152,6 +159,14 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (*set
 	fs.DurationVar(&c.NpmFresh, "npm-fresh", 2*time.Minute,
 		"how long a packument is served without asking the registry again; then it is revalidated with its ETag")
 	fs.Int64Var(&c.NpmMemory, "npm-memory-bytes", 128<<20, "in-memory budget for packuments (a single one may be up to 64 MiB and half of this)")
+
+	fs.BoolVar(&c.GitHub, "github-releases", false,
+		"serve the release assets of public GitHub repositories under /github/<owner>/<repo>/releases/download/<tag>/<asset> (read-only, no GitHub credential)")
+	fs.StringVar(&c.GitHubPrefix, "github-releases-prefix", "github/", "store key prefix of the GitHub release assets")
+	fs.StringVar(&c.GitHubUpstream, "github-releases-upstream", "https://github.com", "where release assets are fetched from (GitHub's redirect to its asset host is followed)")
+	fs.Int64Var(&c.GitHubMaxBytes, "github-releases-max-bytes", 2<<30, "the largest release asset that is stored (413 above it)")
+	fs.DurationVar(&c.GitHubRetryWindow, "github-releases-retry-window", 2*time.Minute,
+		"how long a release asset is asked for again while GitHub answers 429 or 5xx, does not answer, or breaks off mid-body, before the client gets a 502")
 
 	c.Hosts = newHostMap()
 	fs.Var(c.Hosts, "hosts", "serve a front-end at the ROOT of a host name, as kind=host (kind: nix, maven, gradle or npm; repeatable, or comma-separated), "+
@@ -191,7 +206,7 @@ func (c *settings) validate() error {
 	if c.S3.Bucket == "" {
 		errs = append(errs, errors.New("-s3-bucket is required"))
 	}
-	if !c.Nix && !c.Go && !c.Maven && !c.Gradle && !c.Npm {
+	if !c.Nix && !c.Go && !c.Maven && !c.Gradle && !c.Npm && !c.GitHub {
 		errs = append(errs, errors.New("all front-ends are off: nothing to serve"))
 	}
 	// SigV4 caps a presigned URL at seven days.
@@ -215,7 +230,7 @@ func (c *settings) validate() error {
 	for _, p := range []prefixed{
 		{c.Nix, "-nix-prefix", c.NixPrefix}, {c.Go, "-goproxy-prefix", c.GoPrefix},
 		{c.Maven, "-maven-prefix", c.MavenPrefix}, {c.Gradle, "-gradle-prefix", c.GradlePrefix},
-		{c.Npm, "-npm-prefix", c.NpmPrefix},
+		{c.Npm, "-npm-prefix", c.NpmPrefix}, {c.GitHub, "-github-releases-prefix", c.GitHubPrefix},
 	} {
 		if !p.on {
 			continue
@@ -269,6 +284,17 @@ func (c *settings) validate() error {
 		} else if _, err := (&tokenFile{path: c.GradleWriteAuth}).tokens(); err != nil {
 			// Refuse to start rather than serve a cache nobody can write to.
 			errs = append(errs, fmt.Errorf("-gradle-write-token-file: %w", err))
+		}
+	}
+	if c.GitHub {
+		if _, err := parseUpstream(c.GitHubUpstream); err != nil {
+			errs = append(errs, fmt.Errorf("-github-releases-upstream: %w", err))
+		}
+		if c.GitHubMaxBytes < 1 {
+			errs = append(errs, errors.New("-github-releases-max-bytes must be positive"))
+		}
+		if c.GitHubRetryWindow < 0 {
+			errs = append(errs, errors.New("-github-releases-retry-window must not be negative"))
 		}
 	}
 	if c.Npm {
@@ -332,7 +358,7 @@ func realMain(args []string) int {
 	go func() { errc <- srv.ListenAndServe() }()
 	log.Info("serving", "listen", cfg.Listen, "bucket", cfg.S3.Bucket, "nix", cfg.Nix, "goproxy", cfg.Go,
 		"maven", cfg.Maven, "maven_repos", mavenRepoNamesOf(cfg), "gradle", cfg.Gradle, "gradle_write_auth", cfg.GradleWriteAuth != "",
-		"npm", cfg.Npm, "hosts", hostsServed(cfg.Hosts.routes()))
+		"npm", cfg.Npm, "github_releases", cfg.GitHub, "hosts", hostsServed(cfg.Hosts.routes()))
 
 	select {
 	case err := <-errc:
@@ -372,12 +398,22 @@ func newHandler(bg context.Context, cfg *settings, store Store, client *http.Cli
 	if cfg.Npm {
 		frontends = append(frontends, frontendNpm)
 	}
+	if cfg.GitHub {
+		frontends = append(frontends, frontendGitHub)
+	}
 	m := newMetrics(frontends...)
-	c := newCache(bg, store, client, m, log, cacheOptions{
+	opts := cacheOptions{
 		PresignTTL: cfg.PresignTTL, NegativeTTL: cfg.NegativeTTL, MutableTTL: cfg.MutableTTL,
 		IdleTimeout: cfg.IdleTimeout, MemoryBytes: cfg.MemoryBytes, MaxFetches: cfg.MaxFetches,
 		RetryFrontends: []string{frontendMaven, frontendNpm}, RetryBackoff: cfg.RetryBackoff,
-	})
+	}
+	var ghUp *url.URL
+	if cfg.GitHub {
+		ghUp, _ = parseUpstream(cfg.GitHubUpstream) // validated
+		opts.RetryWindow = map[string]time.Duration{frontendGitHub: cfg.GitHubRetryWindow}
+		opts.CheckRedirect = map[string]func(*http.Request, []*http.Request) error{frontendGitHub: githubRedirectCheck(ghUp)}
+	}
+	c := newCache(bg, store, client, m, log, opts)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -418,6 +454,9 @@ func newHandler(bg context.Context, cfg *settings, store Store, client *http.Cli
 	if cfg.Npm {
 		up, _ := parseUpstream(cfg.NpmReg) // validated
 		mux.Handle("/npm/", newNpmFrontend(c, cfg.NpmPrefix, up, cfg.NpmFresh, cfg.NpmMemory))
+	}
+	if cfg.GitHub {
+		mux.Handle("/github/", &githubFrontend{cache: c, prefix: cfg.GitHubPrefix, upstream: ghUp, maxBytes: cfg.GitHubMaxBytes})
 	}
 	return withHostRouting(cfg.Hosts.routes(), mux), c
 }

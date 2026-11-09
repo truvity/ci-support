@@ -270,6 +270,8 @@ go:     GOPROXY=http://cache-redirect.<ns>.svc.cluster.local/goproxy|https://pro
 maven:  http://cache-redirect.<ns>.svc.cluster.local/maven/central   (also /google and /gradle-plugins)
 gradle: http://cache-redirect.<ns>.svc.cluster.local/gradle/cache/   (only when cacheRedirect.gradle.enabled)
 npm:    http://cache-redirect.<ns>.svc.cluster.local/npm             (only when cacheRedirect.npm.enabled)
+github: http://cache-redirect.<ns>.svc.cluster.local/github/<owner>/<repo>/releases/download/<tag>/<asset>
+                                                                     (only when cacheRedirect.githubReleases.enabled)
 ```
 
 ### A name per front-end
@@ -378,7 +380,7 @@ a URL is never signed with credentials about to lapse.
 `deploy/pulumi/runneridentity`'s `CacheRedirect` builds exactly this
 role for one prefix of a bucket (both front-end prefixes go under it,
 e.g. `cache-redirect/nix/`, `cache-redirect/goproxy/`, `cache-redirect/maven/`,
-`cache-redirect/gradle/` and `cache-redirect/npm/`); credentials
+`cache-redirect/gradle/`, `cache-redirect/npm/` and `cache-redirect/github/`); credentials
 come from the default AWS SDK chain, so EKS Pod Identity, IRSA, or the
 keys of `cacheRedirect.s3.existingSecret` for an S3-compatible store.
 
@@ -455,6 +457,60 @@ Two things this front-end meets that the others did not:
   `Retry-After` capped at 5 seconds: the build waits for the answer, and
   Gradle gives an upstream 30 seconds of silence) before the client sees a
   502. The other front-ends do not retry.
+
+### GitHub release assets front-end
+
+`cacheRedirect.githubReleases.enabled` (**off by default**; flag
+`-github-releases`) serves the release assets of **public** GitHub
+repositories under `/github`:
+
+```text
+GET <base>/github/<owner>/<repo>/releases/download/<tag>/<asset>
+```
+
+This is the URL `https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>`
+with its leading `https://github.com/` replaced by `<base>/github/`, so a
+downloader needs one prefix swap, and a CI setting such as
+`CI_RUNNER_GITHUB_RELEASES=<base>/github` is enough for it to route every
+download through the cache. The reason it exists: GitHub's release-download
+edge answers `504` for minutes at a time, and every CI job that downloads a
+tool from a release fails with it.
+
+- **A hit** is a 302 to a presigned URL of the bucket and makes no request to
+  GitHub. The asset is large and, by convention, immutable.
+- **A miss** is fetched from `https://github.com/...` (GitHub's own redirect to
+  its asset host `release-assets.githubusercontent.com` is followed), asked
+  again while GitHub answers 429 or any 5xx, does not answer or breaks off
+  mid-body (a doubling back-off from `-retry-backoff`, at most 15 seconds a
+  wait, for `-github-releases-retry-window`, 2 minutes), committed to the
+  bucket **before** the client is answered, and then answered with the same
+  302 a hit gets. Unlike the other large objects it is not streamed to the
+  first client: nothing reaches the client until the whole asset is stored, so
+  the client sees a redirect, a 404, or (once the window is spent) a 502, never
+  GitHub's 504 and never half an asset. A client's HTTP timeout therefore has to
+  cover the window plus the download of the asset. Requests for one asset that
+  arrive meanwhile share the one fetch.
+- **GitHub's 404 is a 404**, never stored and not remembered in memory either:
+  a release published a minute later is found.
+- **Not an open proxy.** The upstream is fixed (`-github-releases-upstream`,
+  `https://github.com`) and no GitHub credential is sent, so only public assets
+  are reachable. Only the path above is served: exactly six elements, `releases`
+  and `download` literally, `owner` of letters, digits and `-`, `repo` of letters,
+  digits, `.`, `_` and `-`, `tag` and `asset` of letters, digits, `.`, `_`, `+` and `-`,
+  none empty, `.` or `..`, none longer than GitHub allows; anything else
+  (archives, `latest/download`, raw files, a tag with a `/`) is a 404 without a
+  request upstream. A redirect that leaves GitHub's hosts (`*.githubusercontent.com`)
+  or the configured upstream is refused (502).
+- **Size limit.** An asset over `-github-releases-max-bytes` (2 GiB) is not
+  stored: 413.
+- **Keys.** `<prefix><owner>/<repo>/releases/download/<tag>/<asset>`, owner and
+  repository lower-cased (GitHub treats them case-insensitively), tag and asset
+  as requested.
+- A tag that is moved, or an asset replaced under the same tag, keeps being
+  served from the bucket as first stored: delete the object to refresh it.
+
+It is read-only (only GET and HEAD), keeps its `/github` path on every `Host`
+(it has no host of its own), and so is as safe on any tier as Maven.
 
 ### npm front-end
 
@@ -724,6 +780,9 @@ PodMonitor): `cache_redirect_requests_total{frontend,result}` with
 `unauthorized` (a write to the Gradle build cache without an accepted
 credential, or refused because the token file cannot be read),
 `stale` (an npm packument served from its stored copy because the registry failed);
+a request for a GitHub release asset is counted `miss` (pulled through, stored, redirected),
+`redirect` (a hit), `not_found`, `upstream_error` (GitHub kept failing for the whole
+retry window), `store_error` or `rejected` (over the size limit);
 `cache_redirect_uploads_total{frontend,result="ok|failed"}`;
 `cache_redirect_upload_bytes_total{frontend}`;
 `cache_redirect_upstream_request_duration_seconds{frontend}` (a

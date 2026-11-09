@@ -1,0 +1,15 @@
+# refuses: /cacheRedirect/githubReleases/upstream
+# The upstream is an http(s) base URL.
+npmCache:
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
+cacheRedirect:
+  enabled: true
+  s3:
+    bucket: example-bucket
+    region: eu-example-1
+  githubReleases:
+    enabled: true
+    upstream: github.com
+  networkPolicy:
+    consumerNamespaces: [arc-runners-example]
