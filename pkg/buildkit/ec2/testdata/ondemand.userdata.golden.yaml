@@ -156,6 +156,7 @@ write_files:
       Description=Fetch the BuildKit server certificate, key and client CA from SSM
       Wants=network-online.target
       After=network-online.target
+      StartLimitIntervalSec=0
 
       [Service]
       Type=oneshot
@@ -163,7 +164,7 @@ write_files:
       Environment=ASG_SSMCERT_CONF=/etc/asg/ssmcert-buildkit.conf
       ExecStart=/usr/local/lib/asg/ssmcert-buildkit.sh load
       Restart=on-failure
-      RestartSec=15
+      RestartSec=5
       TimeoutStartSec=300
 
       [Install]
@@ -193,9 +194,10 @@ write_files:
     content: |
       [Unit]
       Description=BuildKit daemon (rootless, mutual TLS on :1234)
-      Wants=network-online.target
+      Wants=network-online.target buildkit-cert.service
       After=network-online.target buildkit-imds-guard.service buildkit-cert.service
-      Requires=buildkit-imds-guard.service buildkit-cert.service
+      Requires=buildkit-imds-guard.service
+      StartLimitIntervalSec=0
 
       [Service]
       Type=simple
@@ -204,6 +206,7 @@ write_files:
       Environment=HOME=/var/lib/buildkit-home XDG_RUNTIME_DIR=/run/buildkit
       RuntimeDirectory=buildkit
       RuntimeDirectoryMode=0755
+      ExecStartPre=+/usr/bin/test -s /run/asg-ssmcert/buildkit/cert.pem -a -s /run/asg-ssmcert/buildkit/key.pem -a -s /run/asg-ssmcert/buildkit/ca.pem
       ExecStartPre=+/usr/bin/chown buildkit:buildkit /var/lib/buildkit
       ExecStartPre=+/usr/bin/chmod 0700 /var/lib/buildkit
       ExecStart=/usr/local/bin/rootlesskit --state-dir=/var/lib/buildkit/rootlesskit --net=host /usr/local/bin/buildkitd --config=/etc/buildkit/buildkitd.toml

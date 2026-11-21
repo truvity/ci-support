@@ -105,8 +105,8 @@ func TestOnDemandUserDataGolden(t *testing.T) {
 	ud := b.Rendered.CloudConfig
 
 	for _, want := range []string{
-		// the daemon starts on every boot and needs the certificate unit and the volume
-		"Requires=buildkit-imds-guard.service buildkit-cert.service", "WantedBy=multi-user.target",
+		// the daemon starts on every boot, requires the guard, and wants the certificate unit and the volume
+		"Requires=buildkit-imds-guard.service\n", "Wants=network-online.target buildkit-cert.service\n", "WantedBy=multi-user.target",
 		"ExecStartPre=+/usr/bin/chown buildkit:buildkit /var/lib/buildkit",
 		// the volume, mounted by asg's module, ordered before the daemon
 		"asg-data-volume.service", "MOUNT_POINT='/var/lib/buildkit'", "LABEL='bkcache'",
@@ -131,6 +131,39 @@ func TestOnDemandUserDataGolden(t *testing.T) {
 	} {
 		if strings.Contains(ud, refuse) {
 			t.Errorf("user-data holds %s", refuse)
+		}
+	}
+}
+
+// The boot ordering that cost an outage (2026-11-21): on a boot the first fetch
+// of the certificate can fail within seconds, for want of the role's credentials
+// in the metadata service, and the retry succeeds some seconds later. The fetch
+// retries quickly and without a start limit, and the daemon, which wants it
+// rather than requires it, is not left in "Dependency failed".
+func TestOnDemandBootSurvivesAFailedFirstFetch(t *testing.T) {
+	_, b, err := run(t, onDemandArgs())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ud := b.Rendered.CloudConfig
+
+	for _, want := range []string{
+		// the fetch: retried every 5 s, never rate-limited by systemd
+		"StartLimitIntervalSec=0\n", "Restart=on-failure\n", "RestartSec=5\n", "TimeoutStartSec=300",
+		// the daemon: wants the fetch, is ordered after it, and waits for the files
+		"Wants=network-online.target buildkit-cert.service\n", "After=network-online.target buildkit-imds-guard.service buildkit-cert.service\n",
+		"ExecStartPre=+/usr/bin/test -s ",
+		"Restart=always\n",
+	} {
+		if !strings.Contains(ud, want) {
+			t.Errorf("user-data lacks %q", want)
+		}
+	}
+
+	for _, refuse := range []string{"Requires=buildkit-imds-guard.service buildkit-cert.service", "Requires=buildkit-cert.service", "RestartSec=15"} {
+		if strings.Contains(ud, refuse) {
+			t.Errorf("user-data holds %q", refuse)
 		}
 	}
 }

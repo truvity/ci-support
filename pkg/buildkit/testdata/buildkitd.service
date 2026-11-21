@@ -1,8 +1,9 @@
 [Unit]
 Description=BuildKit daemon (rootless, mutual TLS on :1234)
-Wants=network-online.target
+Wants=network-online.target buildkit-cert.service
 After=network-online.target buildkit-imds-guard.service buildkit-cert.service
-Requires=buildkit-imds-guard.service buildkit-cert.service
+Requires=buildkit-imds-guard.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -11,6 +12,7 @@ Group=buildkit
 Environment=HOME=/var/lib/buildkit-home XDG_RUNTIME_DIR=/run/buildkit
 RuntimeDirectory=buildkit
 RuntimeDirectoryMode=0755
+ExecStartPre=+/usr/bin/test -s /run/tls/cert.pem -a -s /run/tls/key.pem -a -s /run/tls/ca.pem
 ExecStartPre=+/usr/bin/chown buildkit:buildkit /var/lib/buildkit
 ExecStartPre=+/usr/bin/chmod 0700 /var/lib/buildkit
 ExecStart=/usr/local/bin/rootlesskit --state-dir=/var/lib/buildkit/rootlesskit --net=host /usr/local/bin/buildkitd --config=/etc/buildkit/buildkitd.toml
