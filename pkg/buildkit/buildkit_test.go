@@ -64,11 +64,43 @@ func TestUnitGolden(t *testing.T) {
 
 	for _, want := range []string{
 		"MemoryHigh=85%", "MemoryMax=92%", "CPUWeight=50", "User=buildkit", "--net=host",
-		"WantedBy=multi-user.target", "Requires=buildkit-imds-guard.service buildkit-cert.service", "ExecStartPre=+/usr/bin/chown",
+		"WantedBy=multi-user.target", "Requires=buildkit-imds-guard.service\n", "ExecStartPre=+/usr/bin/chown",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %s", want)
 		}
+	}
+}
+
+// The daemon WANTS the certificate fetch and does not require it: a Requires=
+// on a unit that fails once at boot cancels the daemon's start job ("Dependency
+// failed"), and systemd never starts it again after the fetch's retry succeeds.
+// The daemon waits for the files instead and retries until they exist.
+func TestUnitSurvivesAFailedCertificateFetch(t *testing.T) {
+	u := config().UnitText()
+
+	for _, want := range []string{
+		"Wants=network-online.target buildkit-cert.service\n",
+		"After=network-online.target buildkit-imds-guard.service buildkit-cert.service\n",
+		// the guard stays a hard dependency: a daemon without it must not run
+		"Requires=buildkit-imds-guard.service\n",
+		"StartLimitIntervalSec=0\n",
+		"Restart=always\nRestartSec=5\n",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("unit lacks %q", want)
+		}
+	}
+
+	if strings.Contains(u, "Requires=buildkit-imds-guard.service buildkit-cert.service") || strings.Contains(u, "Requires=buildkit-cert.service") {
+		t.Error("the daemon requires the certificate unit: a failed first fetch would cancel its start for good")
+	}
+
+	// It does not start without the three files it serves, so the restart loop
+	// waits for the fetch; the check comes before anything else.
+	pre := "ExecStartPre=+/usr/bin/test -s " + config().TLS.Cert + " -a -s " + config().TLS.Key + " -a -s " + config().TLS.CA + "\n"
+	if i := strings.Index(u, pre); i < 0 || i > strings.Index(u, "ExecStartPre=+/usr/bin/chown") {
+		t.Errorf("unit lacks %q before the other ExecStartPre lines", pre)
 	}
 }
 

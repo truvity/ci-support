@@ -257,28 +257,48 @@ root = %q
 func (c Config) UnitText() string {
 	c = c.withDefaults()
 
-	// The unit starts on every boot: it is enabled, it requires the guard and the
-	// BootUnits, and it hands the mount point of the data volume to its user
-	// before it starts. The data volume itself is required by a drop-in of asg's
-	// datavolume module.
-	deps := strings.Join(append([]string{GuardUnit}, c.BootUnits...), " ")
+	// The unit starts on every boot: it is enabled, it requires the guard, it
+	// is ordered after the BootUnits, and it hands the mount point of the data
+	// volume to its user before it starts. The data volume itself is required
+	// by a drop-in of asg's datavolume module.
+	//
+	// The BootUnits (the certificate fetch) are WANTED, not required. A
+	// Requires= makes the daemon's start job fail with "Dependency failed" when
+	// the fetch fails once, which it does on a boot where the instance role's
+	// credentials are not yet in the metadata service; the fetch then retries
+	// and succeeds seconds later, but systemd never starts a unit whose start
+	// job was cancelled, so the daemon stayed down until someone rebooted the
+	// box. Wants= leaves the start job alone, and the daemon itself checks that
+	// the files it serves exist (ExecStartPre below) and, with Restart=always,
+	// tries again every RestartSec until they do. StartLimitIntervalSec=0 keeps
+	// systemd from giving up on those attempts.
+	boot := strings.Join(c.BootUnits, " ")
+	wants := "network-online.target"
+	after := "network-online.target " + GuardUnit
+
+	if boot != "" {
+		wants += " " + boot
+		after += " " + boot
+	}
 
 	return fmt.Sprintf(`[Unit]
 Description=BuildKit daemon (rootless, mutual TLS on :%d)
-Wants=network-online.target
-After=network-online.target %[2]s
-Requires=%[2]s
+Wants=%[2]s
+After=%[3]s
+Requires=%[4]s
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=%[3]s
-Group=%[3]s
-Environment=HOME=%[4]s XDG_RUNTIME_DIR=%[5]s
+User=%[5]s
+Group=%[5]s
+Environment=HOME=%[6]s XDG_RUNTIME_DIR=%[7]s
 RuntimeDirectory=buildkit
 RuntimeDirectoryMode=0755
-ExecStartPre=+/usr/bin/chown %[3]s:%[3]s %[6]s
-ExecStartPre=+/usr/bin/chmod 0700 %[6]s
-ExecStart=/usr/local/bin/rootlesskit --state-dir=%[6]s/rootlesskit --net=host /usr/local/bin/buildkitd --config=%[7]s
+ExecStartPre=+/usr/bin/test -s %[11]s -a -s %[12]s -a -s %[13]s
+ExecStartPre=+/usr/bin/chown %[5]s:%[5]s %[8]s
+ExecStartPre=+/usr/bin/chmod 0700 %[8]s
+ExecStart=/usr/local/bin/rootlesskit --state-dir=%[8]s/rootlesskit --net=host /usr/local/bin/buildkitd --config=%[9]s
 Delegate=yes
 KillMode=mixed
 TimeoutStopSec=120
@@ -286,13 +306,14 @@ Restart=always
 RestartSec=5
 LimitNOFILE=1048576
 TasksMax=infinity
-MemoryHigh=%[8]d%%
-MemoryMax=%[9]d%%
-CPUWeight=%[10]d
+MemoryHigh=%[10]d%%
+MemoryMax=%[14]d%%
+CPUWeight=%[15]d
 
 [Install]
 WantedBy=multi-user.target
-`, c.Port, deps, User, HomeDir, SocketDir, CacheDir, ConfigPath, c.MemoryHighPercent, c.MemoryMaxPercent, c.CPUWeight)
+`, c.Port, wants, after, GuardUnit, User, HomeDir, SocketDir, CacheDir, ConfigPath, c.MemoryHighPercent,
+		c.TLS.Cert, c.TLS.Key, c.TLS.CA, c.MemoryMaxPercent, c.CPUWeight)
 }
 
 // GuardRules is the nftables table that drops traffic to the instance

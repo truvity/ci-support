@@ -319,7 +319,7 @@ func certFile(kind string) string {
 // is replaced by two units that need no hook:
 //
 //   - CertUnit, a oneshot that runs the module's own `load` on EVERY boot,
-//     before the daemon (the daemon requires it): the instance boots on every
+//     before the daemon (the daemon wants it and waits for its files): the instance boots on every
 //     wake, so the files in /run (tmpfs, empty after a stop) are always the
 //     current parameter versions, and a certificate that was renewed while
 //     the instance slept needs no rotation at all;
@@ -369,10 +369,16 @@ func (m certRotation) Contribute() (module.Contribution, error) {
 	conf := "/etc/asg/ssmcert-" + certName + ".conf"
 	check := "asg-ssmcert-" + certName + ".service"
 
+	// On a boot the instance role's credentials may not be in the metadata
+	// service yet, and the first fetch fails within seconds. The unit retries
+	// every 5 seconds and never hits systemd's start limit (StartLimitIntervalSec=0),
+	// so it holds on until the credentials exist. The daemon does not require
+	// this unit (it wants it and waits for its files: buildkit.UnitText), so
+	// a failure here cannot cancel the daemon's start.
 	load := "[Unit]\nDescription=Fetch the BuildKit server certificate, key and client CA from SSM\n" +
-		"Wants=network-online.target\nAfter=network-online.target\n\n" +
+		"Wants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n" +
 		"[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironment=ASG_SSMCERT_CONF=" + conf + "\n" +
-		"ExecStart=" + script + " load\nRestart=on-failure\nRestartSec=15\nTimeoutStartSec=300\n\n" +
+		"ExecStart=" + script + " load\nRestart=on-failure\nRestartSec=5\nTimeoutStartSec=300\n\n" +
 		"[Install]\nWantedBy=multi-user.target\n"
 
 	every := m.rot.CheckIntervalMinutes
