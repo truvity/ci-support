@@ -61,11 +61,24 @@ const (
 )
 
 // imageParameters are the public SSM parameters of the current Amazon Linux
-// 2023 image per architecture; the image is pinned in the launch template
-// at deploy time, so a newer image is a visible diff and a refresh.
+// 2023 image per architecture. When no image id is given ([Args.ImageID],
+// [ProxyArgs.ImageID]) the launch template resolves one on every preview, so
+// each new Amazon image is a diff that replaces the instance.
 var imageParameters = map[string]string{
 	"amd64": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
 	"arm64": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64",
+}
+
+// imageArgs is the launch template's image: the literal id when the caller
+// pins one, else the architecture's public SSM parameter.
+func imageArgs(arch string, id pulumi.StringInput) asg.ImageArgs {
+	// An empty literal is "not pinned", so a caller may pass a configuration
+	// value straight through.
+	if s, ok := id.(pulumi.String); id != nil && !(ok && s == "") {
+		return asg.ImageArgs{ID: id}
+	}
+
+	return asg.ImageArgs{SSMParameter: imageParameters[arch]}
 }
 
 // Mode says how a builder runs. On demand is the only mode (the group mode
@@ -94,6 +107,12 @@ type (
 		Name string
 		// InstanceType must be of the architecture. Required.
 		InstanceType string
+		// ImageID pins the AMI of the instance, such as ami-0123456789abcdef0,
+		// which must be of Arch. Nil (the default) follows the architecture's
+		// public Amazon Linux 2023 SSM parameter, so every new Amazon image
+		// replaces the instance on the next deploy; a pin moves only when the
+		// caller changes it.
+		ImageID pulumi.StringInput
 
 		// VPCID places the instance's security group. Required. The
 		// instance's subnet is OnDemand.SubnetID.
