@@ -81,6 +81,10 @@ type (
 		InstanceType string
 		// Arch is the proxy's CPU architecture: arm64 (default) or amd64.
 		Arch string
+		// ImageID pins the proxy's AMI, which must be of Arch. Nil (the
+		// default) follows the architecture's public Amazon Linux 2023 SSM
+		// parameter: see [Args.ImageID].
+		ImageID pulumi.StringInput
 		// Routes are the builders: one per architecture. Required.
 		Routes []ProxyRoute
 		// RoleTagKey is the key of the builders' role tag. Default role
@@ -493,7 +497,7 @@ func NewProxy(ctx *pulumi.Context, name string, args *ProxyArgs, opts ...pulumi.
 		Tags:     a.Tags,
 		Provider: a.Provider,
 		UserData: rendered,
-		Image:    asg.ImageArgs{SSMParameter: imageParameters[a.Arch]},
+		Image:    imageArgs(a.Arch, a.ImageID),
 		Instance: asg.InstanceArgs{
 			Type:       a.InstanceType,
 			HopLimit:   1,

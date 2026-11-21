@@ -221,7 +221,7 @@ func newOnDemand(ctx *pulumi.Context, name string, args *Args, opts ...pulumi.Re
 		Tags:     a.Tags,
 		Provider: a.Provider,
 		UserData: rendered,
-		Image:    asg.ImageArgs{SSMParameter: imageParameters[a.Arch]},
+		Image:    imageArgs(a.Arch, a.ImageID),
 		Instance: asg.InstanceArgs{
 			Type:       a.InstanceType,
 			HopLimit:   1,

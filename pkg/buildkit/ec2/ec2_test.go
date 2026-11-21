@@ -45,6 +45,8 @@ type recorder struct {
 	mu       sync.Mutex
 	all      []map[string]any
 	userData string
+	// ssmReads counts the lookups of a public SSM parameter (the image).
+	ssmReads int
 }
 
 func (r *recorder) NewResource(args pulumi.MockResourceArgs) (string, resource.PropertyMap, error) {
@@ -81,6 +83,10 @@ func (r *recorder) Call(args pulumi.MockCallArgs) (resource.PropertyMap, error) 
 	case "aws:ec2/getSubnet:getSubnet":
 		return resource.PropertyMap{"id": args.Args["id"], "availabilityZone": resource.NewStringProperty(testRegion + "a")}, nil
 	case "aws:ssm/getParameter:getParameter":
+		r.mu.Lock()
+		r.ssmReads++
+		r.mu.Unlock()
+
 		return resource.PropertyMap{"name": args.Args["name"], "value": resource.NewStringProperty("ami-0example")}, nil
 	}
 
