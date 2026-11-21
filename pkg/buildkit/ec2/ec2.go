@@ -74,11 +74,11 @@ var imageParameters = map[string]string{
 func imageArgs(arch string, id pulumi.StringInput) asg.ImageArgs {
 	// An empty literal is "not pinned", so a caller may pass a configuration
 	// value straight through.
-	if s, ok := id.(pulumi.String); id != nil && !(ok && s == "") {
-		return asg.ImageArgs{ID: id}
+	if s, ok := id.(pulumi.String); id == nil || (ok && s == "") {
+		return asg.ImageArgs{SSMParameter: imageParameters[arch]}
 	}
 
-	return asg.ImageArgs{SSMParameter: imageParameters[arch]}
+	return asg.ImageArgs{ID: id}
 }
 
 // Mode says how a builder runs. On demand is the only mode (the group mode
