@@ -3,8 +3,9 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
-## v1.6.1
+## v1.7.0
 
+- **New: the wake proxy restarts a builder that is running but refuses its BuildKit port.** The proxy is now truvity/asg v0.10.0 (`ec2.WakeProxyVersion` and `WakeProxySHA256` were v0.9.1; `github.com/truvity/asg` moves to v0.10.0). When a wake finds the builder running and its port refusing, and the proxy has seen it refuse for `UnreachableRestartAfter` while it has also run that long since its launch, the proxy stops it and starts it again once it is stopped, with no person needed. At most one restart per wake and per `UnreachableRestartCooldown` per builder, each logged and counted in `wake_proxy_restarts_total{route}`. New `ProxyArgs.UnreachableRestartAfter` (zero: the wake timeout, 180 s) and `ProxyArgs.UnreachableRestartCooldown` (zero: 30 min; at least `UnreachableRestartAfter`). The proxy's rendered config now carries both values, so its user-data changes and the proxy instance is refreshed on the next apply; the builders' user-data does not change.
 - **Changed: `WakeProxyBuilderUnreachable` is severity `critical` (was `warning`).** It fires when a client's build got no builder connection after the wake and every retry, so builds on that architecture fail until the builder answers; a warning let a builder that was up without buildkitd answering wait for someone to notice. Only the rule's `severity` label changes: route it like `WakeProxyDown`. The expression, the window and the values are unchanged.
 
 ## v1.6.0

@@ -134,7 +134,9 @@ write_files:
         "shutdownGrace": "30s",
         "healthPort": 8080,
         "metricsAddress": "0.0.0.0:9102",
-        "activityTag": "wake-proxy/last-active"
+        "activityTag": "wake-proxy/last-active",
+        "unreachableRestartAfter": "3m0s",
+        "unreachableRestartCooldown": "30m0s"
       }
   - path: /usr/local/lib/asg/in-service.d/00-wake-proxy.sh
     owner: root:root
@@ -347,7 +349,7 @@ runcmd:
         *) bs_die "unsupported architecture $(uname -m)" ;;
       esac
       case "$arch" in
-        arm64) url='https://github.com/truvity/asg/releases/download/v0.9.1/wake-proxy_0.9.1_linux_arm64' sum='abababababababababababababababababababababababababababababababab' ;;
+        arm64) url='https://github.com/truvity/asg/releases/download/v0.10.0/wake-proxy_0.10.0_linux_arm64' sum='abababababababababababababababababababababababababababababababab' ;;
         *) bs_die 'no build of wake-proxy for this architecture' ;;
       esac
       dest='/usr/local/bin/wake-proxy' mode=0755
