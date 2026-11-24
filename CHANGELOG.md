@@ -3,6 +3,10 @@
 Tags `vX.Y.Z` version the repository: charts, images and tools are released
 together under one version.
 
+## v1.6.1
+
+- **Changed: `WakeProxyBuilderUnreachable` is severity `critical` (was `warning`).** It fires when a client's build got no builder connection after the wake and every retry, so builds on that architecture fail until the builder answers; a warning let a builder that was up without buildkitd answering wait for someone to notice. Only the rule's `severity` label changes: route it like `WakeProxyDown`. The expression, the window and the values are unchanged.
+
 ## v1.6.0
 
 - **Fixed: a builder whose first certificate fetch failed at boot never started buildkitd.** On some boots the instance role's credentials are not in the metadata service yet, the fetch (`buildkit-cert.service`) fails within seconds and succeeds on its retry some seconds later; but `buildkitd.service` required it (`Requires=`), so the failed fetch cancelled the daemon's start ("Dependency failed") and systemd never started it again. Runners that needed the remote builder then timed out at "Booting builder" until someone rebooted the instance. Now:

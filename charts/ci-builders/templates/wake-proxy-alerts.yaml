@@ -62,13 +62,14 @@ spec:
         {{- /* Needs the wake proxy from truvity/asg >= v0.9.0: an older proxy has no
         wake_proxy_connect_failures_total, the series is absent and this rule stays
         silent. wake_proxy_dial_failures_total is not used: it counts every dial
-        attempt, so it rises on every normal wake. */}}
+        attempt, so it rises on every normal wake. Critical: builds on
+        that architecture fail until the builder answers again. */}}
         - alert: WakeProxyBuilderUnreachable
           record: ""
           expr: increase(wake_proxy_connect_failures_total[{{ $t.builderUnreachable.window }}]) > 0
           labels:
             {{ $l }}: {{ $a.clusterName }}
-            severity: warning
+            severity: critical
           annotations:
             summary: {{ `The wake proxy cannot reach the {{ $labels.route }} builder` | quote }}
             description: {{ printf `A client's build got no connection to the {{ $labels.route }} builder after the wake and every retry ({{ $value | humanize }} abandoned connections in %s). The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group.` $t.builderUnreachable.window | quote }}
