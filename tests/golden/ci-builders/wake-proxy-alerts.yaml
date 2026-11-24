@@ -46,7 +46,7 @@ spec:
           expr: increase(wake_proxy_connect_failures_total[15m]) > 0
           labels:
             k8s_cluster_name: example
-            severity: warning
+            severity: critical
           annotations:
             summary: "The wake proxy cannot reach the {{ $labels.route }} builder"
             description: "A client's build got no connection to the {{ $labels.route }} builder after the wake and every retry ({{ $value | humanize }} abandoned connections in 15m). The builder may be up without buildkitd answering, or its address did not resolve. Check the builder's boot (buildkitd.service, the certificate unit) and its security group."
