@@ -103,6 +103,16 @@ timeout that is not below it. `buildx` gives up after about 40 s, so the first
 build after a quiet period needs a retry loop longer than its own connect
 timeout: that is the caller's.
 
+A builder that is running but whose port never answers (buildkitd failed at
+boot) is restarted by the proxy, from truvity/asg v0.10.0: once the proxy has
+seen it refuse for `UnreachableRestartAfter` (default the wake timeout, 180 s)
+and it has run at least that long since its launch, the next wake stops it and
+starts it again when it reads stopped. At most once per wake and per
+`UnreachableRestartCooldown` (default 30 min, at least
+`UnreachableRestartAfter`) per builder; each restart is logged and counted in
+`wake_proxy_restarts_total{route}`. A builder that still refuses after that
+waits for a person, and `WakeProxyBuilderUnreachable` (critical) says so.
+
 ### Wiring
 
 Create the proxy and the builders in one stack: `NewProxy` first, then one
