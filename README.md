@@ -95,15 +95,22 @@ connects and stops it after 20 idle minutes. v1.0.0 removed the group mode
 (an Auto Scaling group with a warm pool per builder); see
 [CHANGELOG.md](CHANGELOG.md).
 
+## Platform part and company part
+
+**Platform part.** The platform admin applies the `ci-builders` chart to a cluster (the caches, cache-redirect, the builders' trust and the wake proxy alerts), the builders on EC2 from a Pulumi program that uses `pkg/buildkit/ec2`, and the runner roles from `pkg/runneridentity`. The platform owns the inputs: the namespaces allowed to reach each cache, and the client CA. [docs/day-1-install.md](docs/day-1-install.md) and [docs/mtls.md](docs/mtls.md) have the detail.
+
+**Company part.** None. A company applies nothing from this repository; its repositories use the caches and builders through the shared workflows in [truvity/ci-workflows](https://github.com/truvity/ci-workflows).
+
 ## Consumers
 
-Who uses this, and through which surface (2026-10-25):
+Who uses this, and through which surface (2026-11-11):
 
 | Consumer | Through |
 |---|---|
 | GitHub Actions runners on serverless containers, see [truvity/grun](https://github.com/truvity/grun) | the cache and builder endpoints |
 | A second, non-AWS estate | the `ci-builders` chart |
 | The builders on EC2, in the consumer's own deploy program | `pkg/buildkit/ec2` |
+| The maintainers' platform repository | the `ci-builders` chart (caches and wake proxy alerts) and `pkg/buildkit/ec2` (the builders) |
 
 ## Runner identity (Go, Pulumi)
 
@@ -117,8 +124,8 @@ same API; see the package documentation.
 ## Neighbours
 
 - **[truvity/ci-plane](https://github.com/truvity/ci-plane)**: where this
-  content came from. It still publishes the runner images and the archived
-  ARC runner scale-set chart.
+  content came from. It is archived. The runner image is published by
+  [truvity/grun](https://github.com/truvity/grun).
 - **[truvity/grun](https://github.com/truvity/grun)**: runners on serverless
   containers; a client of the services here.
 - **[truvity/ci-workflows](https://github.com/truvity/ci-workflows)** and
@@ -150,11 +157,12 @@ a particular slips in.
 
 ## Status
 
-True on 2026-10-26: v0.1.0 is the first release. The `ci-builders` chart and
-cache-redirect moved here from ci-plane with byte-identical goldens.
-`pkg/buildkit/ec2` is tested against Pulumi mocks and fake commands; no
-builder made by it has booted yet, so the first deploy is its first real
-test.
+The releases and their notes are at
+[github.com/truvity/ci-support/releases](https://github.com/truvity/ci-support/releases);
+[CHANGELOG.md](CHANGELOG.md) is the change history. The `ci-builders` chart
+and cache-redirect moved here from ci-plane with byte-identical goldens.
+`pkg/buildkit/ec2` is tested against Pulumi mocks and fake commands, and runs
+the builders of the maintainers' platform repository.
 
 ## Development
 
